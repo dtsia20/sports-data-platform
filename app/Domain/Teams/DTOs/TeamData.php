@@ -9,6 +9,5 @@ final readonly class TeamData
     public function __construct(
         public string $externalId,
         public string $name,
-    ) {
-    }
+    ) {}
 }
