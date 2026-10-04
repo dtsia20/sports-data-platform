@@ -19,6 +19,5 @@ final readonly class MatchData
         public string $status,
         public ?int $homeScore,
         public ?int $awayScore,
-    ) {
-    }
+    ) {}
 }
