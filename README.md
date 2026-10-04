@@ -573,8 +573,10 @@ Idempotency tests              ✓
 Match update tests             ✓
 
 Failure-path tests             ✓
-CI / GitHub Actions            Next
-API v1                         Planned
+CI / GitHub Actions            ✓
+API v1                         ✓
+Date filtering                 ✓
+Additional API filters         Next
 Entity resolution              Planned
 Queues                         Planned
 Redis caching                  Planned
