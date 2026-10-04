@@ -113,4 +113,203 @@ final class MatchIndexTest extends TestCase
             ->assertUnprocessable()
             ->assertJsonValidationErrors('date');
     }
+
+    public function test_it_filters_matches_by_competition(): void
+    {
+        $premierLeague = Competition::query()->create([
+            'name' => 'Premier League',
+            'slug' => 'premier-league',
+        ]);
+
+        $laLiga = Competition::query()->create([
+            'name' => 'La Liga',
+            'slug' => 'la-liga',
+        ]);
+
+        $arsenal = Team::query()->create([
+            'name' => 'Arsenal',
+            'slug' => 'arsenal',
+        ]);
+
+        $chelsea = Team::query()->create([
+            'name' => 'Chelsea',
+            'slug' => 'chelsea',
+        ]);
+
+        SportsMatch::query()->create([
+            'competition_id' => $premierLeague->id,
+            'home_team_id' => $arsenal->id,
+            'away_team_id' => $chelsea->id,
+            'starts_at' => '2026-10-04 18:30:00+00',
+            'status' => 'finished',
+            'home_score' => 2,
+            'away_score' => 1,
+        ]);
+
+        SportsMatch::query()->create([
+            'competition_id' => $laLiga->id,
+            'home_team_id' => $arsenal->id,
+            'away_team_id' => $chelsea->id,
+            'starts_at' => '2026-10-04 20:30:00+00',
+            'status' => 'scheduled',
+            'home_score' => null,
+            'away_score' => null,
+        ]);
+
+        $response = $this->getJson(
+            '/api/v1/matches?competition=premier-league'
+        );
+
+        $response
+            ->assertOk()
+            ->assertJsonCount(1, 'data')
+            ->assertJsonPath(
+                'data.0.competition.slug',
+                'premier-league'
+            );
+    }
+
+    public function test_it_filters_matches_by_status(): void
+    {
+        [$competition, $arsenal, $chelsea] = $this->createMatchDependencies();
+
+        SportsMatch::query()->create([
+            'competition_id' => $competition->id,
+            'home_team_id' => $arsenal->id,
+            'away_team_id' => $chelsea->id,
+            'starts_at' => '2026-10-04 18:30:00+00',
+            'status' => 'finished',
+            'home_score' => 2,
+            'away_score' => 1,
+        ]);
+
+        SportsMatch::query()->create([
+            'competition_id' => $competition->id,
+            'home_team_id' => $chelsea->id,
+            'away_team_id' => $arsenal->id,
+            'starts_at' => '2026-10-05 18:30:00+00',
+            'status' => 'scheduled',
+            'home_score' => null,
+            'away_score' => null,
+        ]);
+
+        $response = $this->getJson(
+            '/api/v1/matches?status=finished'
+        );
+
+        $response
+            ->assertOk()
+            ->assertJsonCount(1, 'data')
+            ->assertJsonPath(
+                'data.0.status',
+                'finished'
+            );
+    }
+
+    public function test_it_filters_matches_by_team(): void
+    {
+        [$competition, $arsenal, $chelsea] = $this->createMatchDependencies();
+
+        $liverpool = Team::query()->create([
+            'name' => 'Liverpool',
+            'slug' => 'liverpool',
+        ]);
+
+        SportsMatch::query()->create([
+            'competition_id' => $competition->id,
+            'home_team_id' => $arsenal->id,
+            'away_team_id' => $chelsea->id,
+            'starts_at' => '2026-10-04 18:30:00+00',
+            'status' => 'finished',
+            'home_score' => 2,
+            'away_score' => 1,
+        ]);
+
+        SportsMatch::query()->create([
+            'competition_id' => $competition->id,
+            'home_team_id' => $chelsea->id,
+            'away_team_id' => $liverpool->id,
+            'starts_at' => '2026-10-04 20:30:00+00',
+            'status' => 'finished',
+            'home_score' => 1,
+            'away_score' => 0,
+        ]);
+
+        $response = $this->getJson(
+            '/api/v1/matches?team=arsenal'
+        );
+
+        $response
+            ->assertOk()
+            ->assertJsonCount(1, 'data')
+            ->assertJsonPath(
+                'data.0.homeTeam.slug',
+                'arsenal'
+            );
+    }
+
+    public function test_it_combines_match_filters(): void
+    {
+        [$competition, $arsenal, $chelsea] = $this->createMatchDependencies();
+
+        SportsMatch::query()->create([
+            'competition_id' => $competition->id,
+            'home_team_id' => $arsenal->id,
+            'away_team_id' => $chelsea->id,
+            'starts_at' => '2026-10-04 18:30:00+00',
+            'status' => 'finished',
+            'home_score' => 2,
+            'away_score' => 1,
+        ]);
+
+        SportsMatch::query()->create([
+            'competition_id' => $competition->id,
+            'home_team_id' => $chelsea->id,
+            'away_team_id' => $arsenal->id,
+            'starts_at' => '2026-10-05 18:30:00+00',
+            'status' => 'scheduled',
+            'home_score' => null,
+            'away_score' => null,
+        ]);
+
+        $response = $this->getJson(
+            '/api/v1/matches'
+            .'?date=2026-10-04'
+            .'&competition=premier-league'
+            .'&status=finished'
+            .'&team=arsenal'
+        );
+
+        $response
+            ->assertOk()
+            ->assertJsonCount(1, 'data')
+            ->assertJsonPath(
+                'data.0.status',
+                'finished'
+            );
+    }
+
+    private function createMatchDependencies(): array
+    {
+        $competition = Competition::query()->create([
+            'name' => 'Premier League',
+            'slug' => 'premier-league',
+        ]);
+
+        $arsenal = Team::query()->create([
+            'name' => 'Arsenal',
+            'slug' => 'arsenal',
+        ]);
+
+        $chelsea = Team::query()->create([
+            'name' => 'Chelsea',
+            'slug' => 'chelsea',
+        ]);
+
+        return [
+            $competition,
+            $arsenal,
+            $chelsea,
+        ];
+    }
 }
