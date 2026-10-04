@@ -18,8 +18,8 @@ use App\Domain\Teams\DTOs\TeamData;
 use App\Domain\Teams\Models\Team;
 use App\Infrastructure\SportsData\FakeProviderA\FakeProviderAAdapter;
 use DateTimeImmutable;
-use RuntimeException;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use RuntimeException;
 use Tests\TestCase;
 
 final class SyncMatchesServiceTest extends TestCase
@@ -288,7 +288,7 @@ final class SyncMatchesServiceTest extends TestCase
         self::assertSame(1, $match->away_score);
     }
 
-    public function test_it_rolls_back_when_a_team_mapping_is_missing(): void
+    public function test_it_rejects_a_match_when_a_team_mapping_is_missing(): void
     {
         $provider = SportsDataProvider::query()->create([
             'name' => 'Fake Provider A',
@@ -334,6 +334,130 @@ final class SyncMatchesServiceTest extends TestCase
                 'Team mapping not found for external ID 101.',
                 $exception->getMessage()
             );
+        }
+
+        $this->assertDatabaseCount('matches', 0);
+        $this->assertDatabaseCount('provider_match_references', 0);
+    }
+
+    public function test_it_rejects_a_match_when_a_competition_mapping_is_missing(): void
+    {
+        $provider = SportsDataProvider::query()->create([
+            'name' => 'Fake Provider A',
+            'slug' => 'fake-provider-a',
+            'enabled' => true,
+        ]);
+
+        $competition = Competition::query()->create([
+            'name' => 'Premier League',
+            'slug' => 'premier-league',
+        ]);
+
+        $arsenal = Team::query()->create([
+            'name' => 'Arsenal',
+            'slug' => 'arsenal',
+        ]);
+
+        $chelsea = Team::query()->create([
+            'name' => 'Chelsea',
+            'slug' => 'chelsea',
+        ]);
+
+        ProviderCompetitionReference::query()->create([
+            'provider_id' => $provider->id,
+            'competition_id' => $competition->id,
+            'external_id' => '55',
+        ]);
+
+        ProviderTeamReference::query()->create([
+            'provider_id' => $provider->id,
+            'team_id' => $arsenal->id,
+            'external_id' => '100',
+        ]);
+
+        ProviderTeamReference::query()->create([
+            'provider_id' => $provider->id,
+            'team_id' => $chelsea->id,
+            'external_id' => '101',
+        ]);
+
+        ProviderCompetitionReference::query()->delete();
+
+        $service = new SyncMatchesService(new FakeProviderAAdapter);
+
+        try {
+            $service->sync($provider, new DateTimeImmutable('2026-10-04'));
+            self::fail('Expected RuntimeException was not thrown.');
+        } catch (RuntimeException $exception) {
+            self::assertSame(
+                'Competition mapping not found for external ID 55.',
+                $exception->getMessage()
+            );
+        }
+
+        $this->assertDatabaseCount('matches', 0);
+        $this->assertDatabaseCount('provider_match_references', 0);
+    }
+
+    public function test_it_rolls_back_the_match_when_provider_reference_creation_fails(): void
+    {
+        $provider = SportsDataProvider::query()->create([
+            'name' => 'Fake Provider A',
+            'slug' => 'fake-provider-a',
+            'enabled' => true,
+        ]);
+
+        $competition = Competition::query()->create([
+            'name' => 'Premier League',
+            'slug' => 'premier-league',
+        ]);
+
+        $arsenal = Team::query()->create([
+            'name' => 'Arsenal',
+            'slug' => 'arsenal',
+        ]);
+
+        $chelsea = Team::query()->create([
+            'name' => 'Chelsea',
+            'slug' => 'chelsea',
+        ]);
+
+        ProviderCompetitionReference::query()->create([
+            'provider_id' => $provider->id,
+            'competition_id' => $competition->id,
+            'external_id' => '55',
+        ]);
+
+        ProviderTeamReference::query()->create([
+            'provider_id' => $provider->id,
+            'team_id' => $arsenal->id,
+            'external_id' => '100',
+        ]);
+
+        ProviderTeamReference::query()->create([
+            'provider_id' => $provider->id,
+            'team_id' => $chelsea->id,
+            'external_id' => '101',
+        ]);
+
+        $service = new SyncMatchesService(new FakeProviderAAdapter);
+        $dispatcher = ProviderMatchReference::getEventDispatcher();
+        ProviderMatchReference::setEventDispatcher(clone $dispatcher);
+        $failure = new RuntimeException('Simulated provider reference failure.');
+
+        ProviderMatchReference::creating(function (ProviderMatchReference $reference) use ($failure): void {
+            $this->assertDatabaseHas('matches', ['id' => $reference->match_id]);
+
+            throw $failure;
+        });
+
+        try {
+            $service->sync($provider, new DateTimeImmutable('2026-10-04'));
+            self::fail('Expected RuntimeException was not thrown.');
+        } catch (RuntimeException $exception) {
+            self::assertSame($failure, $exception);
+        } finally {
+            ProviderMatchReference::setEventDispatcher($dispatcher);
         }
 
         $this->assertDatabaseCount('matches', 0);
