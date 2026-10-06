@@ -4,21 +4,22 @@ declare(strict_types=1);
 
 namespace App\Application\Matches\Services;
 
+use App\Application\Competitions\Services\ResolveCompetitionService;
+use App\Application\Teams\Services\ResolveTeamService;
 use App\Domain\Matches\Contracts\SportsDataProviderInterface;
 use App\Domain\Matches\DTOs\MatchData;
 use App\Domain\Matches\Models\SportsMatch;
-use App\Domain\Providers\Models\ProviderCompetitionReference;
 use App\Domain\Providers\Models\ProviderMatchReference;
-use App\Domain\Providers\Models\ProviderTeamReference;
 use App\Domain\Providers\Models\SportsDataProvider;
 use DateTimeImmutable;
 use Illuminate\Support\Facades\DB;
-use RuntimeException;
 
 final readonly class SyncMatchesService
 {
     public function __construct(
         private SportsDataProviderInterface $providerAdapter,
+        private ResolveCompetitionService $competitionResolver,
+        private ResolveTeamService $teamResolver,
     ) {}
 
     public function sync(
@@ -26,12 +27,7 @@ final readonly class SyncMatchesService
         DateTimeImmutable $date,
     ): void {
         foreach ($this->providerAdapter->getMatches($date) as $matchData) {
-            DB::transaction(
-                fn (): mixed => $this->syncMatch(
-                    $provider,
-                    $matchData,
-                )
-            );
+            $this->syncMatch($provider, $matchData);
         }
     }
 
@@ -39,87 +35,56 @@ final readonly class SyncMatchesService
         SportsDataProvider $provider,
         MatchData $matchData,
     ): void {
-        $competitionId = ProviderCompetitionReference::query()
-            ->where('provider_id', $provider->id)
-            ->where(
-                'external_id',
-                $matchData->competition->externalId
-            )
-            ->value('competition_id');
-
-        if ($competitionId === null) {
-            throw new RuntimeException(
-                sprintf(
-                    'Competition mapping not found for external ID %s.',
-                    $matchData->competition->externalId
-                )
-            );
-        }
-
-        $homeTeamId = $this->resolveTeamId(
+        $competition = $this->competitionResolver->resolve(
             $provider,
-            $matchData->homeTeam->externalId
+            $matchData->competition
         );
 
-        $awayTeamId = $this->resolveTeamId(
+        $homeTeam = $this->teamResolver->resolve(
             $provider,
-            $matchData->awayTeam->externalId
+            $matchData->homeTeam
         );
 
-        $matchReference = ProviderMatchReference::query()
-            ->where('provider_id', $provider->id)
-            ->where('external_id', $matchData->externalId)
-            ->first();
+        $awayTeam = $this->teamResolver->resolve(
+            $provider,
+            $matchData->awayTeam
+        );
 
-        if ($matchReference !== null) {
-            $matchReference->match->update([
-                'competition_id' => $competitionId,
-                'home_team_id' => $homeTeamId,
-                'away_team_id' => $awayTeamId,
+        DB::transaction(function () use ($provider, $matchData, $competition, $homeTeam, $awayTeam): void {
+            $matchReference = ProviderMatchReference::query()
+                ->where('provider_id', $provider->id)
+                ->where('external_id', $matchData->externalId)
+                ->first();
+
+            if ($matchReference !== null) {
+                $matchReference->match->update([
+                    'competition_id' => $competition->id,
+                    'home_team_id' => $homeTeam->id,
+                    'away_team_id' => $awayTeam->id,
+                    'starts_at' => $matchData->startsAt,
+                    'status' => $matchData->status,
+                    'home_score' => $matchData->homeScore,
+                    'away_score' => $matchData->awayScore,
+                ]);
+
+                return;
+            }
+
+            $match = SportsMatch::query()->create([
+                'competition_id' => $competition->id,
+                'home_team_id' => $homeTeam->id,
+                'away_team_id' => $awayTeam->id,
                 'starts_at' => $matchData->startsAt,
                 'status' => $matchData->status,
                 'home_score' => $matchData->homeScore,
                 'away_score' => $matchData->awayScore,
             ]);
 
-            return;
-        }
-
-        $match = SportsMatch::query()->create([
-            'competition_id' => $competitionId,
-            'home_team_id' => $homeTeamId,
-            'away_team_id' => $awayTeamId,
-            'starts_at' => $matchData->startsAt,
-            'status' => $matchData->status,
-            'home_score' => $matchData->homeScore,
-            'away_score' => $matchData->awayScore,
-        ]);
-
-        ProviderMatchReference::query()->create([
-            'provider_id' => $provider->id,
-            'match_id' => $match->id,
-            'external_id' => $matchData->externalId,
-        ]);
-    }
-
-    private function resolveTeamId(
-        SportsDataProvider $provider,
-        string $externalId,
-    ): int {
-        $teamId = ProviderTeamReference::query()
-            ->where('provider_id', $provider->id)
-            ->where('external_id', $externalId)
-            ->value('team_id');
-
-        if ($teamId === null) {
-            throw new RuntimeException(
-                sprintf(
-                    'Team mapping not found for external ID %s.',
-                    $externalId
-                )
-            );
-        }
-
-        return $teamId;
+            ProviderMatchReference::query()->create([
+                'provider_id' => $provider->id,
+                'match_id' => $match->id,
+                'external_id' => $matchData->externalId,
+            ]);
+        });
     }
 }

@@ -576,8 +576,8 @@ Failure-path tests             ✓
 CI / GitHub Actions            ✓
 API v1                         ✓
 Date filtering                 ✓
-Additional API filters         Next
-Entity resolution              Planned
+Additional API filters         ✓
+Entity resolution              In progress
 Queues                         Planned
 Redis caching                  Planned
 Performance testing            Planned
