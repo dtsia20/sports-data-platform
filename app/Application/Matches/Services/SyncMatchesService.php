@@ -4,7 +4,10 @@ declare(strict_types=1);
 
 namespace App\Application\Matches\Services;
 
+use App\Application\Competitions\Exceptions\CompetitionMappingNotFound;
 use App\Application\Competitions\Services\ResolveCompetitionService;
+use App\Application\Matches\DTOs\MatchSyncReport;
+use App\Application\Teams\Exceptions\TeamMappingNotFound;
 use App\Application\Teams\Services\ResolveTeamService;
 use App\Domain\Matches\Contracts\SportsDataProviderInterface;
 use App\Domain\Matches\DTOs\MatchData;
@@ -25,10 +28,22 @@ final readonly class SyncMatchesService
     public function sync(
         SportsDataProvider $provider,
         DateTimeImmutable $date,
-    ): void {
+    ): MatchSyncReport {
+        $report = new MatchSyncReport;
+
         foreach ($this->providerAdapter->getMatches($date) as $matchData) {
-            $this->syncMatch($provider, $matchData);
+            try {
+                $this->syncMatch($provider, $matchData);
+
+                $report->recordSuccess();
+            } catch (TeamMappingNotFound|CompetitionMappingNotFound) {
+                $report->recordUnresolved();
+
+                continue;
+            }
         }
+
+        return $report;
     }
 
     private function syncMatch(

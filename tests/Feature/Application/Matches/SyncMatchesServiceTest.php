@@ -4,11 +4,9 @@ declare(strict_types=1);
 
 namespace Tests\Feature\Application\Matches;
 
-use App\Application\Competitions\Exceptions\CompetitionMappingNotFound;
 use App\Application\Competitions\Services\ResolveCompetitionService;
 use App\Application\Matches\Services\SyncMatchesService;
 use App\Application\Providers\Services\RecordUnresolvedEntityService;
-use App\Application\Teams\Exceptions\TeamMappingNotFound;
 use App\Application\Teams\Services\ResolveTeamService;
 use App\Domain\Competitions\DTOs\CompetitionData;
 use App\Domain\Competitions\Models\Competition;
@@ -289,7 +287,7 @@ final class SyncMatchesServiceTest extends TestCase
         self::assertSame(1, $match->away_score);
     }
 
-    public function test_it_rejects_a_match_when_a_team_mapping_is_missing(): void
+    public function test_it_skips_a_match_when_a_team_mapping_is_missing(): void
     {
         $provider = SportsDataProvider::query()->create([
             'name' => 'Fake Provider A',
@@ -321,25 +319,20 @@ final class SyncMatchesServiceTest extends TestCase
 
         $service = $this->makeService(new FakeProviderAAdapter);
 
-        try {
-            $service->sync(
-                $provider,
-                new DateTimeImmutable('2026-10-04')
-            );
+        $report = $service->sync(
+            $provider,
+            new DateTimeImmutable('2026-10-04')
+        );
 
-            self::fail('Expected RuntimeException was not thrown.');
-        } catch (RuntimeException $exception) {
-            self::assertSame(
-                'Team mapping not found for external ID 101.',
-                $exception->getMessage()
-            );
-        }
+        self::assertSame(1, $report->processed);
+        self::assertSame(0, $report->succeeded);
+        self::assertSame(1, $report->unresolved);
 
         $this->assertDatabaseCount('matches', 0);
         $this->assertDatabaseCount('provider_match_references', 0);
     }
 
-    public function test_it_rejects_a_match_when_a_competition_mapping_is_missing(): void
+    public function test_it_skips_a_match_when_a_competition_mapping_is_missing(): void
     {
         $provider = SportsDataProvider::query()->create([
             'name' => 'Fake Provider A',
@@ -384,15 +377,14 @@ final class SyncMatchesServiceTest extends TestCase
 
         $service = $this->makeService(new FakeProviderAAdapter);
 
-        try {
-            $service->sync($provider, new DateTimeImmutable('2026-10-04'));
-            self::fail('Expected RuntimeException was not thrown.');
-        } catch (RuntimeException $exception) {
-            self::assertSame(
-                'Competition mapping not found for external ID 55.',
-                $exception->getMessage()
-            );
-        }
+        $report = $service->sync(
+            $provider,
+            new DateTimeImmutable('2026-10-04')
+        );
+
+        self::assertSame(1, $report->processed);
+        self::assertSame(0, $report->succeeded);
+        self::assertSame(1, $report->unresolved);
 
         $this->assertDatabaseCount('matches', 0);
         $this->assertDatabaseCount('provider_match_references', 0);
@@ -498,16 +490,14 @@ final class SyncMatchesServiceTest extends TestCase
             new FakeProviderAAdapter
         );
 
-        try {
-            $service->sync(
-                $provider,
-                new DateTimeImmutable('2026-10-04')
-            );
+        $report = $service->sync(
+            $provider,
+            new DateTimeImmutable('2026-10-04')
+        );
 
-            self::fail('Expected TeamMappingNotFound was not thrown.');
-        } catch (TeamMappingNotFound) {
-            // Expected.
-        }
+        self::assertSame(1, $report->processed);
+        self::assertSame(0, $report->succeeded);
+        self::assertSame(1, $report->unresolved);
 
         $this->assertDatabaseHas(
             'unresolved_provider_entities',
@@ -572,15 +562,14 @@ final class SyncMatchesServiceTest extends TestCase
             new FakeProviderAAdapter
         );
 
+        $date = new DateTimeImmutable('2026-10-04');
+
         for ($i = 0; $i < 2; $i++) {
-            try {
-                $service->sync(
-                    $provider,
-                    new DateTimeImmutable('2026-10-04')
-                );
-            } catch (TeamMappingNotFound) {
-                // Expected.
-            }
+            $report = $service->sync($provider, $date);
+
+            self::assertSame(1, $report->processed);
+            self::assertSame(0, $report->succeeded);
+            self::assertSame(1, $report->unresolved);
         }
 
         $this->assertDatabaseCount(
@@ -613,18 +602,14 @@ final class SyncMatchesServiceTest extends TestCase
             new FakeProviderAAdapter
         );
 
-        try {
-            $service->sync(
-                $provider,
-                new DateTimeImmutable('2026-10-04')
-            );
+        $report = $service->sync(
+            $provider,
+            new DateTimeImmutable('2026-10-04')
+        );
 
-            self::fail(
-                'Expected CompetitionMappingNotFound was not thrown.'
-            );
-        } catch (CompetitionMappingNotFound) {
-            // Expected.
-        }
+        self::assertSame(1, $report->processed);
+        self::assertSame(0, $report->succeeded);
+        self::assertSame(1, $report->unresolved);
 
         $this->assertDatabaseHas(
             'unresolved_provider_entities',
@@ -637,6 +622,124 @@ final class SyncMatchesServiceTest extends TestCase
                 'occurrences_count' => 1,
             ]
         );
+    }
+
+    public function test_it_continues_after_an_unresolved_match(): void
+    {
+        $provider = SportsDataProvider::query()->create([
+            'name' => 'Fake Provider A',
+            'slug' => 'fake-provider-a',
+            'enabled' => true,
+        ]);
+
+        $competition = Competition::query()->create([
+            'name' => 'Premier League',
+            'slug' => 'premier-league',
+        ]);
+
+        $arsenal = Team::query()->create([
+            'name' => 'Arsenal',
+            'slug' => 'arsenal',
+        ]);
+
+        $chelsea = Team::query()->create([
+            'name' => 'Chelsea',
+            'slug' => 'chelsea',
+        ]);
+
+        ProviderCompetitionReference::query()->create([
+            'provider_id' => $provider->id,
+            'competition_id' => $competition->id,
+            'external_id' => '55',
+        ]);
+
+        foreach ([
+            '100' => $arsenal->id,
+            '101' => $chelsea->id,
+        ] as $externalId => $teamId) {
+            ProviderTeamReference::query()->create([
+                'provider_id' => $provider->id,
+                'team_id' => $teamId,
+                'external_id' => (string) $externalId,
+            ]);
+        }
+
+        $competitionData = new CompetitionData('55', 'Premier League');
+        $arsenalData = new TeamData('100', 'Arsenal');
+        $chelseaData = new TeamData('101', 'Chelsea');
+        $unknownData = new TeamData('999', 'Unknown FC');
+
+        $matches = [
+            new MatchData(
+                '2001',
+                $competitionData,
+                $arsenalData,
+                $chelseaData,
+                new DateTimeImmutable('2026-10-04T18:30:00+00:00'),
+                'finished',
+                2,
+                1,
+            ),
+            new MatchData(
+                '2002',
+                $competitionData,
+                $arsenalData,
+                $unknownData,
+                new DateTimeImmutable('2026-10-04T19:30:00+00:00'),
+                'scheduled',
+                null,
+                null,
+            ),
+            new MatchData(
+                '2003',
+                $competitionData,
+                $chelseaData,
+                $arsenalData,
+                new DateTimeImmutable('2026-10-04T20:30:00+00:00'),
+                'finished',
+                1,
+                0,
+            ),
+        ];
+
+        $service = $this->makeService(
+            new ConfigurableSportsDataProvider($matches)
+        );
+
+        $report = $service->sync(
+            $provider,
+            new DateTimeImmutable('2026-10-04')
+        );
+
+        self::assertSame(3, $report->processed);
+        self::assertSame(2, $report->succeeded);
+        self::assertSame(1, $report->unresolved);
+
+        $this->assertDatabaseCount('matches', 2);
+        $this->assertDatabaseCount('provider_match_references', 2);
+
+        $this->assertDatabaseHas('provider_match_references', [
+            'provider_id' => $provider->id,
+            'external_id' => '2001',
+        ]);
+
+        $this->assertDatabaseHas('provider_match_references', [
+            'provider_id' => $provider->id,
+            'external_id' => '2003',
+        ]);
+
+        $this->assertDatabaseMissing('provider_match_references', [
+            'provider_id' => $provider->id,
+            'external_id' => '2002',
+        ]);
+
+        $this->assertDatabaseHas('unresolved_provider_entities', [
+            'provider_id' => $provider->id,
+            'entity_type' => 'team',
+            'external_id' => '999',
+            'external_name' => 'Unknown FC',
+            'status' => 'pending',
+        ]);
     }
 }
 

@@ -271,6 +271,32 @@ manage caching
 expose HTTP endpoints
 
 Those responsibilities belong to other layers.
+## Match-Level Fault Isolation
+
+The synchronization process handles expected data-resolution
+failures independently for each match.
+
+If a team or competition mapping is missing:
+
+- The unknown provider entity is recorded for resolution.
+- The affected match is skipped.
+- Later matches continue processing.
+- The synchronization result records the unresolved count.
+
+SyncMatchesService returns a MatchSyncReport containing:
+
+- processed: Total matches handled
+- succeeded: Successfully synchronized matches
+- unresolved: Matches skipped because mappings are missing
+
+Unexpected failures are not silently ignored.
+
+Database errors and other unexpected exceptions propagate
+to the caller, allowing future background jobs to retry.
+
+Match persistence remains protected by database transactions.
+
+This behavior is verified with mixed-batch integration tests.
 ## Idempotent Synchronization
 
 Synchronization is designed to be idempotent.
@@ -578,6 +604,8 @@ API v1                         ✓
 Date filtering                 ✓
 Additional API filters         ✓
 Entity resolution              In progress
+Match-level fault isolation    ✓
+Background jobs                Next
 Queues                         Planned
 Redis caching                  Planned
 Performance testing            Planned
