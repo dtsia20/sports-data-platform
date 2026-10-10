@@ -61,13 +61,11 @@ External Sports Providers
           API
 ```
 
-Future iterations will introduce:
+Database queue jobs and development workers are implemented. Future iterations will introduce:
 Scheduler
-Queues
-Workers
+Production worker supervision
 Redis
 Caching
-CI/CD
 AWS
 Observability
 WebSockets / SSE
@@ -292,7 +290,7 @@ SyncMatchesService returns a MatchSyncReport containing:
 Unexpected failures are not silently ignored.
 
 Database errors and other unexpected exceptions propagate
-to the caller, allowing future background jobs to retry.
+to the caller, allowing queued background jobs to retry.
 
 Match persistence remains protected by database transactions.
 
@@ -332,18 +330,10 @@ status: finished
 The synchronization service updates the existing canonical match instead of creating a new record.
 ## Transaction Boundaries
 
-Each match synchronization runs inside a database transaction.
-Conceptually:
-begin transaction
-     │
-     ├── resolve mappings
-     ├── update/create match
-     ├── update/create provider reference
-     │
-commit
+Mappings are resolved before the match-persistence transaction. Unknown entities are recorded outside that transaction, so their resolution records survive a skipped match or a later persistence failure.
 
-If synchronization fails, the transaction prevents partial match data from being persisted. Each match has its own transaction: earlier successful matches remain committed, and the exception stops processing subsequent matches.
-This will become especially important when entity resolution and more complex ingestion logic are introduced.
+Each mapped match then uses its own transaction to create/update the canonical match and its provider reference. If reference persistence fails, the match write rolls back. Earlier successful matches remain committed. Expected missing mappings skip only that match; unexpected exceptions stop the batch and propagate to the queue worker.
+
 ## Entity Resolution
 
 External entities must not be automatically matched using names alone.
@@ -456,19 +446,61 @@ Current synchronization tests verify:
 
 ✓ existing matches are updated when provider data changes
 
-Failure-path tests verify missing team and competition mappings are rejected before writes. A separate rollback test forces provider-reference creation to fail after the match is inserted and verifies that neither record remains.
+Failure-path tests verify missing team and competition mappings are recorded and the affected matches are skipped before match writes. A separate rollback test forces provider-reference creation to fail after the match is inserted and verifies that neither record remains.
 
 The rollback test was also checked with the transaction temporarily removed: it failed because one match remained. Restoring the transaction makes it pass.
 ## Test Environment
 
-Tests currently use:
-SQLite in-memory
+Development and CI use PostgreSQL 17. Run tests against a separate disposable database such as `sports_data_test`; `RefreshDatabase` and the queue integration suite can rebuild schema. Never point tests at the development database.
 
-for fast execution.
-Development uses:
-PostgreSQL 17
+```bash
+docker compose exec postgres createdb -U sports_data sports_data_test # once
+docker compose exec -e APP_ENV=testing -e DB_DATABASE=sports_data_test app php artisan test
+```
 
-This keeps the local test suite fast, but PostgreSQL-specific behavior will eventually also be tested in CI using a real PostgreSQL service.
+Queue integration tests use the actual database queue, Laravel worker, and database cache locks. They rebuild migrations without wrapping each test in a transaction: PostgreSQL lock contention catches a unique-key violation, which would abort an enclosing test transaction. Other suites continue using `RefreshDatabase`.
+
+## Background Synchronization
+
+`SyncProviderMatchesJob` queues a provider ID and date. The worker resolves `SyncMatchesService` through dependency injection; ingestion and entity resolution stay in the application services. For this iteration, `SportsDataProviderInterface` is bound to `FakeProviderAAdapter`.
+
+Use the repository's local defaults:
+
+```dotenv
+QUEUE_CONNECTION=database
+CACHE_STORE=database
+DB_QUEUE_RETRY_AFTER=90
+```
+
+Both workers must use the same queue database and shared database cache. Run migrations, seed the fake-provider mappings, and start a development worker:
+
+```bash
+docker compose exec app php artisan migrate
+docker compose exec app php artisan db:seed
+docker compose exec app php artisan queue:work database --sleep=1 --timeout=60
+```
+
+For an interactive development dispatch, use `php artisan tinker` inside the app container. Retrieve the fake provider and dispatch:
+
+```php
+$provider = App\Domain\Providers\Models\SportsDataProvider::where('slug', 'fake-provider-a')->firstOrFail();
+App\Jobs\SyncProviderMatchesJob::dispatch($provider->id, '2026-10-04');
+```
+
+The job logs `processed`, `succeeded`, and `unresolved`. Missing mappings produce unresolved results and finish normally. Unexpected exceptions retry, with delays of 10 seconds, 30 seconds, then 60 seconds for subsequent retries. A persistent exception fails on attempt 10 and is stored in `failed_jobs`.
+
+```bash
+docker compose exec app php artisan queue:failed
+docker compose exec app php artisan queue:retry <failed-job-uuid>
+docker compose exec app php artisan test tests/Feature/Jobs
+```
+
+Overlap protection uses a lock for the job class plus `(providerId, date)`. A contending job is released for 10 seconds; unrelated providers and dates can run. Locks expire after 90 seconds to recover from interrupted workers. The 60-second job timeout is shorter than both lock expiry and the default 90-second queue reservation window. Keep these relationships valid when changing environment settings. Enforcing process timeouts requires PHP's `pcntl` extension; the current repository image does not install it, so production timeout enforcement and process supervision remain follow-up work.
+
+The 10-attempt budget includes releases caused by overlap contention. It gives retries some room, but cannot guarantee completion under sustained contention. Duplicate dispatch is allowed and serialized for the same provider/date; it is not deduplicated. Sequential synchronization is idempotent. Different dates can still refer to the same provider match, so this lock does not establish full concurrent persistence safety.
+
+The integration suite verifies real lock contention, unrelated jobs proceeding, lock expiry, transient recovery without duplicate matches, the complete 10-attempt failure lifecycle, unresolved mappings without retries, and timeout configuration relationships. It advances Laravel's clock instead of sleeping. It does not simulate process termination or simultaneous OS worker processes. Use a continuous worker to observe delayed retries manually; `--stop-when-empty` can exit before a delayed retry becomes available. Long-lived workers must be restarted after code changes (`php artisan queue:restart`). Scheduling and production worker supervision are not implemented yet.
+
 ## Seed Data
 
 The project includes development seed data.
@@ -605,8 +637,11 @@ Date filtering                 ✓
 Additional API filters         ✓
 Entity resolution              In progress
 Match-level fault isolation    ✓
-Background jobs                Next
-Queues                         Planned
+Background jobs                ✓
+Database queues / overlap lock ✓
+Queue reliability tests        Implemented on feature branch
+Scheduler                      Next
+Production worker supervision  Planned
 Redis caching                  Planned
 Performance testing            Planned
 AWS deployment                 Planned
@@ -635,22 +670,9 @@ Observability
 
 ## Next Milestone
 
-The immediate next milestone is to establish CI with GitHub Actions.
-The intended pipeline will eventually validate every pull request using:
-Pull Request
-     │
-     ├── Composer install
-     ├── PHP platform validation
-     ├── Laravel Pint
-     ├── PostgreSQL service
-     ├── migrations
-     └── automated tests
-            │
-            ▼
-        merge allowed
+Add scheduled synchronization after reviewing the queue reliability changes. Define which enabled providers run, what date/timezone they synchronize, how often dispatch occurs, and whether duplicate pending jobs are acceptable. Test scheduled dispatch and discuss scheduler locks separately from job execution locks. Production process supervision follows as a separate operational lesson.
 
-After CI is established, development will continue with the first public API endpoint:
-GET /api/v1/matches
+The detailed lesson roadmap and verified delivery status are in [the learning pipeline](docs/learning-pipeline.md).
 
 ## Status
 
