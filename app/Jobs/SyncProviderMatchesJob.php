@@ -4,11 +4,13 @@ declare(strict_types=1);
 
 namespace App\Jobs;
 
-use App\Application\Matches\Services\SyncMatchesService;
+use App\Application\Providers\Services\ProviderSyncServiceFactory;
 use App\Domain\Providers\Models\SportsDataProvider;
+use App\Infrastructure\SportsData\ApiFootball\ApiFootballUnavailable;
 use DateTimeImmutable;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Queue\Queueable;
+use Illuminate\Http\Client\RequestException;
 use Illuminate\Queue\Middleware\WithoutOverlapping;
 use Illuminate\Support\Facades\Log;
 
@@ -30,15 +32,25 @@ final class SyncProviderMatchesJob implements ShouldQueue
         public string $date,
     ) {}
 
-    public function handle(SyncMatchesService $syncService): void
+    public function handle(ProviderSyncServiceFactory $factory): void
     {
         $provider = SportsDataProvider::query()
             ->findOrFail($this->providerId);
 
-        $report = $syncService->sync(
-            $provider,
-            new DateTimeImmutable($this->date)
-        );
+        try {
+            $report = $factory->forProvider($provider)->sync($provider, new DateTimeImmutable($this->date));
+        } catch (ApiFootballUnavailable $exception) {
+            $this->fail($exception);
+
+            return;
+        } catch (RequestException $exception) {
+            if ($provider->slug === 'api-football' && $exception->response->clientError()) {
+                $this->fail($exception);
+
+                return;
+            }
+            throw $exception;
+        }
 
         Log::info('Provider matches synchronized', [
             'providerId' => $this->providerId,

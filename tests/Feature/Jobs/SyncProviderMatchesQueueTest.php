@@ -36,6 +36,7 @@ final class SyncProviderMatchesQueueTest extends TestCase
     public function test_a_contended_job_waits_while_other_providers_and_dates_can_run(): void
     {
         $provider = $this->provider();
+        config(['services.sports_data.adapters.other-provider' => SportsDataProviderInterface::class]);
         $otherProvider = SportsDataProvider::query()->create([
             'name' => 'Other Provider',
             'slug' => 'other-provider',

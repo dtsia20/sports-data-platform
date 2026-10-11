@@ -4,7 +4,7 @@ declare(strict_types=1);
 
 namespace Tests\Feature\Jobs;
 
-use App\Application\Matches\Services\SyncMatchesService;
+use App\Application\Providers\Services\ProviderSyncServiceFactory;
 use App\Domain\Providers\Models\SportsDataProvider;
 use App\Jobs\SyncProviderMatchesJob;
 use Illuminate\Foundation\Testing\RefreshDatabase;
@@ -48,7 +48,7 @@ final class SyncProviderMatchesJobTest extends TestCase
         );
 
         $job->handle(
-            app(SyncMatchesService::class)
+            app(ProviderSyncServiceFactory::class)
         );
 
         $this->assertDatabaseCount('matches', 1);

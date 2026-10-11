@@ -23,7 +23,7 @@ final class ApiFootballAdapter implements SportsDataProviderInterface
         $key = config('services.api_football.key');
 
         if (! is_string($key) || trim($key) === '') {
-            throw new RuntimeException('API-Football API key is not configured.');
+            throw new ApiFootballUnavailable('API-Football API key is not configured.');
         }
 
         $response = Http::baseUrl('https://v3.football.api-sports.io')
@@ -34,14 +34,19 @@ final class ApiFootballAdapter implements SportsDataProviderInterface
             ->retry(2, 200, function (Exception $exception): bool {
                 return $exception instanceof ConnectionException
                     || ($exception instanceof RequestException && $exception->response->serverError());
-            })
-            ->get('/fixtures', ['date' => $date->format('Y-m-d'), 'timezone' => 'UTC'])
-            ->throw();
+            }, throw: false)
+            ->beforeSending(fn () => app(ApiFootballRequestBudget::class)->reserve())
+            ->get('/fixtures', ['date' => $date->format('Y-m-d'), 'timezone' => 'UTC']);
 
+        if ($response->status() === 429) {
+            app(ApiFootballRequestBudget::class)->exhaust();
+        }
+        $response->throw();
         $payload = $response->json();
 
         if (! is_array($payload) || ! array_key_exists('errors', $payload) || $payload['errors'] !== []) {
-            throw new RuntimeException('API-Football returned an invalid response or an API error.');
+            app(ApiFootballRequestBudget::class)->exhaust();
+            throw new ApiFootballUnavailable('API-Football returned an invalid response or an API error.');
         }
 
         Validator::make($payload, [

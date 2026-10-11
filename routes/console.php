@@ -15,7 +15,10 @@ Artisan::command('sports:sync-matches', function (): int {
     $date = now('UTC')->toDateString();
     $dispatched = 0;
 
-    foreach (SportsDataProvider::query()->where('enabled', true)->select('id')->lazyById() as $provider) {
+    foreach (SportsDataProvider::query()->where('enabled', true)->select('id', 'slug')->lazyById() as $provider) {
+        if ($provider->slug === 'api-football' && ! config('services.api_football.scheduled')) {
+            continue;
+        }
         SyncProviderMatchesJob::dispatch($provider->id, $date);
         $dispatched++;
     }
@@ -26,7 +29,7 @@ Artisan::command('sports:sync-matches', function (): int {
 })->purpose('Queue today’s UTC matches for each enabled sports-data provider');
 
 Schedule::command('sports:sync-matches')
-    ->everyFiveMinutes()
+    ->everyThirtyMinutes()
     ->timezone('UTC')
     ->withoutOverlapping(5)
     ->onOneServer();
