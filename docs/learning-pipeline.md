@@ -1,7 +1,7 @@
 # Web Development Improvement — Architecture Learning Pipeline
 
-**Updated:** 2026-10-10  
-**Reference project:** [dtsia20/sports-data-platform](https://github.com/dtsia20/sports-data-platform)  
+**Updated:** 2026-10-11
+**Reference project:** [dtsia20/sports-data-platform](https://github.com/dtsia20/sports-data-platform)
 **Purpose:** Shared cross-chat source of truth for what we have learned, what we are building, and what comes next. Always verify the actual GitHub branch and working tree before describing any item as finished.
 
 ## 1. Learning contract
@@ -56,49 +56,62 @@ Guiding invariant: provider-specific IDs never live inside canonical team/compet
 | 09 | Entity-resolution foundation | Resolvers, unresolved provider entities, recording and transaction boundary | Merged in PR #9 (GitHub verified) |
 | 10 | Match-level fault isolation | `MatchSyncReport`, skip expected missing mapping, allow later matches to process | Merged in PR #9; user reported tests passing |
 | 11A | Laravel database queue | `SyncProviderMatchesJob`, DI binding, reporting and DB worker | Merged in PR #10; verified from `origin/main` |
-| 11B | Retry and failure lifecycle | Transient recovery and all 10 persistent-failure attempts, ending in `failed_jobs` | Implemented and tested on `feat/queue-reliability`; PR review and merge pending |
-| 11C | Overlap protection | Provider/date middleware, real PostgreSQL lock contention, independent keys and stale-lock expiry | Base implementation merged in PR #10; integration tests on feature branch |
-| 11D | Scheduler and production worker | Scheduled dispatch, process supervision and deployment | Next lesson; not implemented |
+| 11B | Retry and failure lifecycle | Transient recovery and all 10 persistent-failure attempts, ending in `failed_jobs` | Merged in PR #11; PostgreSQL integration suite verified |
+| 11C | Overlap protection | Provider/date middleware, real PostgreSQL lock contention, independent keys and stale-lock expiry | Base implementation merged in PR #10; integration tests merged in PR #11 |
+| 11D | Scheduled dispatch | Enabled-provider selection, today in UTC, five-minute schedule, scheduler locks | Implemented on `feat/scheduled-match-sync`; delivery pending |
+| 11E | Worker lifecycle and Compose supervision | `pcntl`, real timeout/replacement tests, shared-cache restart, optional managed worker/scheduler services | Implemented on `feat/scheduled-match-sync`; production deployment unverified |
 
-**GitHub state verified October 10, 2026:** fetched `origin/main` at `6a0db949c16d798e552b62b4fe76ed8364df7f5b`, including PR #10. The cloud checkout now uses `feat/queue-reliability` based on that commit. Earlier authorized system-font changes are preserved. This lesson's new tests and documentation belong to `feat/queue-reliability`; remote CI and merge must be verified separately.
+**GitHub state verified October 11, 2026:** `origin/main` at `c686f52` includes merged PR #11. This lesson uses `feat/scheduled-match-sync` based on that commit. Queue reliability is delivered. Scheduler changes are on the feature branch; no scheduler PR, CI or merge is claimed yet.
 
 **Open entity-resolution refinements:** manual mapping/conflict review, candidate ranking and atomic concurrent persistence remain future work. Resolvers currently use existing provider mappings and record unknown entities; they do not implement automatic contextual matching.
 
-## 4. Current active milestone — review and deliver queue reliability
+## 4. Current active milestone — deliver background processing
 
-**Working branch:** `feat/queue-reliability`.
+**Working branch:** `feat/scheduled-match-sync`.
 
-The job's policy is 10 attempts, a 60-second timeout, backoff of 10/30/60 seconds (60 repeated afterward), a provider/date overlap lock with 10-second release delay and 90-second expiry, and a default database queue `retry_after` of 90 seconds. Middleware releases count toward the same attempt budget. Expected mapping failures are unresolved results; unexpected exceptions propagate.
+**Scenario:** every five minutes, enqueue today's UTC synchronization for each enabled provider. The learner chose to keep duplicate pending jobs allowed; queue deduplication is a separate future topic.
 
-### Implemented in this lesson
+### Responsibilities and decisions
 
-- [x] Updated the cloud checkout to include merged PR #10 while preserving font changes.
-- [x] Tested a job blocked by an actual database cache lock, with other providers/dates still proceeding.
-- [x] Verified a released job consumes an attempt and cannot run before its delay expires.
-- [x] Tested stale-lock expiry and release after successful/exceptional execution.
-- [x] Tested transient provider failure followed by recovery without duplicate match records.
-- [x] Tested all 10 persistent-failure attempts, actual backoff availability timestamps and a `failed_jobs` record.
-- [x] Tested missing mappings being recorded and logged without retries.
-- [x] Checked that timeout is shorter than queue reservation and lock expiry.
-- [x] Updated README architecture, queue commands, test database guidance, limitations and next milestone.
+- Scheduler: timing, UTC, `onOneServer()` and `withoutOverlapping(5)` for dispatch.
+- `sports:sync-matches`: compute one UTC date, select enabled providers in ID batches, dispatch jobs, report the count. No ingestion logic belongs here.
+- `SyncProviderMatchesJob`: execute asynchronously with the existing provider/date lock and 10-attempt retry policy.
+- `SyncMatchesService`: resolve identities, persist matches transactionally and report outcomes.
+- Scheduler locks and job locks protect different operations. Neither deduplicates pending jobs. Shared database cache is required across scheduler/worker instances.
+- The fake adapter has fixed fixture dates; today's requested date is orchestration data until real-provider integration exists.
 
-These tests use Laravel's worker with a PostgreSQL database queue and database cache, in one process. They use controlled clock advancement rather than waiting in real time. They establish actual database lock contention, not simultaneous OS-worker execution or process timeout/termination behavior. The current Docker image lacks `pcntl`; production timeout enforcement and worker supervision remain follow-up work.
+### Implementation and validation
 
-### Before delivery
+- [x] Verified PR #11 merged and created the scheduler feature branch.
+- [x] Added the dispatch command and UTC five-minute schedule.
+- [x] Added enabled/disabled selection, empty-selection, UTC-boundary and duplicate-dispatch tests.
+- [x] Added actual database enqueueing and scheduled due/not-due tests, including scheduler lock configuration.
+- [x] Updated README commands, architecture and operational limitations.
+- [x] Scheduler suite: **6 tests passed, 28 assertions**. Full PostgreSQL suite: **32 tests passed, 211 assertions**. Pint passed across 63 PHP files.
+- [x] `schedule:list` showed the five-minute event. `schedule:test --name=sports:sync-matches` invoked the registered event and persisted one development queue job; a real one-shot database worker completed it, leaving zero queued/failed jobs and one canonical fixture match.
+- [ ] Open a PR for `feat/scheduled-match-sync`, verify CI, review and merge before marking the milestone delivered. The branch combines scheduled dispatch with worker lifecycle and Compose supervision.
 
-- [x] Reviewed tests and ran Pint and the full PostgreSQL suite: **26 tests passed, 183 assertions**. Queue-only suite: **9 tests passed, 102 assertions**. GitHub CI for these local changes remains unverified.
-- [ ] Open a PR for `feat/queue-reliability`, confirm CI, review and merge. Do not mark branch work as merged.
+### Worker lifecycle lesson
 
-### Next focused lesson: scheduled dispatch
+- [x] Added `pcntl` to the PHP Dockerfile and CI configuration; compiled and verified it in the cloud runtime.
+- [x] Added separate-process tests for enforced timeout, abandoned reservations and locks, replacement retries, permanent failure, and subsequent healthy work.
+- [x] Added a real daemon restart test using the shared-cache `queue:restart` marker.
+- [x] Added optional Compose `background` services with `init`, `restart: unless-stopped`, a 75-second shutdown grace period and hourly worker recycling.
+- [x] Lifecycle subprocess suite: **2 tests passed, 22 assertions**. Full PostgreSQL suite: **34 tests passed, 233 assertions**. Pint passed across 65 PHP files.
+- [x] Validated regular and cloud-override Compose configurations; started worker and scheduler services, ran scheduled dispatch through the managed worker, verified Docker replaced the worker after `queue:restart`, and explicitly stopped both background services afterward.
 
-Design a scheduled sync for enabled providers. Decide frequency, target date and timezone, and duplicate-dispatch policy before writing code. Keep scheduler dispatch, queue execution locks and ingestion transactions as separate responsibilities. Test eligible-provider selection and dispatched provider/date values. Discuss `onOneServer` and scheduler `withoutOverlapping` without claiming either replaces the job lock. Keep production supervision as its own follow-up.
+Timeout tests use a one-second timeout/two attempts rather than waiting for the application's 60-second timeout/10 attempts. They use actual wall-clock time and Linux process signals, not simulated time. `--once` does not exercise Laravel's daemon timeout alarms. The fixture is test-only. Production cron, release deployment and multi-host recovery remain unverified.
+
+### Next focused lesson: real-provider HTTP integration
+
+Choose a provider and review its authentication, date semantics, limits and terms. Start with sanitized response fixtures and adapter tests. Define HTTP timeouts shorter than the job timeout, bounded retry/rate-limit behavior, and how normalized data enters the existing synchronization service. Keep live credentials in secure configuration; do not embed them in code or tests.
 
 ## 5. Next modules — dependency order
 
 | Phase | Topic | Build outcome / tests | Portfolio value |
 |---|---|---|---|
 | 10 | Fault isolation and ingestion results | Completed basic `MatchSyncReport` and expected-mapping skip behavior; extend reporting when needed | Production ingestion resilience |
-| 11 | Laravel queues and scheduling | **Active:** base job merged in PR #10; review/deliver reliability tests, then scheduler | Asynchronous processing |
+| 11 | Laravel queues and scheduling | **Active:** queue reliability merged in PR #11; review/deliver scheduler and worker lifecycle, then real-provider integration | Asynchronous processing |
 | 12 | Real provider integration | HTTP client, timeout/retry policies, rate limiting, fixture-based adapter tests, secret management | External API engineering |
 | 13 | Contextual entity resolution | Candidate ranking, aliases, competition/country context, confidence thresholds, review policy and audit history | Identity reconciliation |
 | 14 | Redis and caching | Cache keys, TTL/invalidation, hot API reads, stale/fresh behavior, query impact measurements | Performance engineering |
@@ -124,8 +137,8 @@ docker compose exec app php artisan test
 docker compose exec app ./vendor/bin/pint --test
 ```
 
-App: http://localhost:8000  
-Adminer: http://localhost:8080  
+App: http://localhost:8000
+Adminer: http://localhost:8080
 API: http://localhost:8000/api/v1/matches
 
 Git workflow:
@@ -158,4 +171,4 @@ CI uses PHP 8.5 + PostgreSQL 17 on GitHub Actions. Compare branch and current fi
 
 ## 8. Instructions for future ChatGPT sessions in this Project
 
-Start by reading this roadmap and checking repo's latest `main` and feature branch, recent PR/CI status, and relevant current files. Do not assume a downloadable patch has been applied or merged. Continue from the remaining delivery tasks in Section 4, then the scheduled-dispatch lesson. Explain one meaningful architecture decision and its alternatives, implement incrementally with the user, test, and review. At the conclusion of each topic **update the root README** and refresh the statuses in this pipeline. Distinguish verified from planned work. Keep content accurate, practical and portfolio-oriented. Do not invent tool executions or successful deployments.
+Start by reading this roadmap and checking repo's latest `main` and feature branch, recent PR/CI status, and relevant current files. Do not assume a downloadable patch has been applied or merged. Continue from the remaining delivery tasks in Section 4, then the real-provider integration lesson. Explain one meaningful architecture decision and its alternatives, implement incrementally with the user, test, and review. At the conclusion of each topic **update the root README** and refresh the statuses in this pipeline. Distinguish verified from planned work. Keep content accurate, practical and portfolio-oriented. Do not invent tool executions or successful deployments.

@@ -62,7 +62,6 @@ External Sports Providers
 ```
 
 Database queue jobs and development workers are implemented. Future iterations will introduce:
-Scheduler
 Production worker supervision
 Redis
 Caching
@@ -429,7 +428,7 @@ docker compose exec app ./vendor/bin/pint
 Verify formatting without modifying files:
 docker compose exec app ./vendor/bin/pint --test
 
-The second command will eventually be used as part of CI.
+The formatting check also runs in CI.
 ## Testing
 
 Tests run with PHPUnit through Laravel:
@@ -495,11 +494,90 @@ docker compose exec app php artisan queue:retry <failed-job-uuid>
 docker compose exec app php artisan test tests/Feature/Jobs
 ```
 
-Overlap protection uses a lock for the job class plus `(providerId, date)`. A contending job is released for 10 seconds; unrelated providers and dates can run. Locks expire after 90 seconds to recover from interrupted workers. The 60-second job timeout is shorter than both lock expiry and the default 90-second queue reservation window. Keep these relationships valid when changing environment settings. Enforcing process timeouts requires PHP's `pcntl` extension; the current repository image does not install it, so production timeout enforcement and process supervision remain follow-up work.
+Overlap protection uses a lock for the job class plus `(providerId, date)`. A contending job is released for 10 seconds; unrelated providers and dates can run. Locks expire after 90 seconds to recover from interrupted workers. The 60-second job timeout is shorter than both lock expiry and the default 90-second queue reservation window. Keep these relationships valid when changing environment settings. Enforcing process timeouts requires PHP's `pcntl` extension, now installed by the Dockerfile and enabled in CI. The optional Compose background profile manages development worker processes as described below.
 
 The 10-attempt budget includes releases caused by overlap contention. It gives retries some room, but cannot guarantee completion under sustained contention. Duplicate dispatch is allowed and serialized for the same provider/date; it is not deduplicated. Sequential synchronization is idempotent. Different dates can still refer to the same provider match, so this lock does not establish full concurrent persistence safety.
 
-The integration suite verifies real lock contention, unrelated jobs proceeding, lock expiry, transient recovery without duplicate matches, the complete 10-attempt failure lifecycle, unresolved mappings without retries, and timeout configuration relationships. It advances Laravel's clock instead of sleeping. It does not simulate process termination or simultaneous OS worker processes. Use a continuous worker to observe delayed retries manually; `--stop-when-empty` can exit before a delayed retry becomes available. Long-lived workers must be restarted after code changes (`php artisan queue:restart`). Scheduling and production worker supervision are not implemented yet.
+The integration suite verifies real lock contention, unrelated jobs proceeding, lock expiry, transient recovery without duplicate matches, the complete 10-attempt failure lifecycle, unresolved mappings without retries, and timeout configuration relationships. It advances Laravel's clock instead of sleeping. The queue reliability suite does not simulate process termination or simultaneous OS workers; the separate worker lifecycle suite verifies real timeout termination and replacement processes. Use a continuous worker to observe delayed retries manually; `--stop-when-empty` can exit before a delayed retry becomes available. Long-lived workers must be restarted after code changes (`php artisan queue:restart`). Scheduled dispatch is implemented below. Optional Compose supervision is implemented below; production deployment is not validated.
+
+## Scheduled Synchronization
+
+Every five minutes, Laravel runs `sports:sync-matches`. This command selects enabled providers and dispatches one `SyncProviderMatchesJob` for each, using today's date in UTC. The date is calculated once per invocation to keep the batch consistent across midnight. Providers are read in ID batches, and the command performs no external HTTP requests or match persistence. The configured queue connection must be `database` to execute asynchronously.
+
+```text
+Scheduler (every five minutes, UTC)
+    → sports:sync-matches (select enabled providers, dispatch jobs)
+    → database queue
+    → SyncProviderMatchesJob (provider/date execution lock)
+    → SyncMatchesService (resolve identities, persist matches, report)
+```
+
+Inspect the schedule or dispatch manually:
+
+```bash
+docker compose exec app php artisan schedule:list
+docker compose exec app php artisan sports:sync-matches
+# Run the registered event immediately, even outside its due time:
+docker compose exec app php artisan schedule:test --name=sports:sync-matches
+```
+
+For development, run these in separate terminals after migrations and seeding:
+
+```bash
+docker compose exec app php artisan schedule:work
+docker compose exec app php artisan queue:work database --sleep=1 --timeout=60
+```
+
+In production, configure the hosting platform to invoke `php artisan schedule:run` in the application directory every minute, and supervise the queue worker separately. This repository does not install cron or a production process supervisor. Stop development processes with Ctrl+C; queued jobs remain in the database. Running `schedule:run` manually outside a five-minute boundary correctly does nothing.
+
+The schedule uses `onOneServer()` to choose one dispatcher per due tick across scheduler instances, and `withoutOverlapping(5)` to avoid overlapping dispatch commands. Both rely on the shared cache; use `CACHE_STORE=database` and the same database/cache prefix across hosts. The five-minute dispatch lock expiry allows recovery after a crashed dispatcher, and assumes the dispatch command finishes within that window. These locks protect the dispatch command; the job's provider/date lock protects synchronization. Manual command calls do not acquire scheduler locks.
+
+Duplicate pending jobs remain allowed by design. If a previous sync is delayed, the next tick can enqueue another. The job lock prevents simultaneous execution for the same provider/date, but does not deduplicate the queue or eliminate every persistence race. Partial dispatch before an exception can also leave some jobs queued; a later tick can dispatch them again. Observe queue backlog before deciding whether unique jobs or a different dispatch policy is needed.
+
+The fake adapter still returns its fixed October 4 fixture regardless of requested date. Scheduling today's date proves orchestration; it does not establish a real provider's date-filtering behavior.
+
+Tests cover enabled-provider selection, no enabled providers, UTC date boundaries, duplicate dispatch policy, actual database enqueueing, and five-minute due/not-due boundaries with scheduler lock configuration:
+
+```bash
+docker compose exec -e APP_ENV=testing -e DB_DATABASE=sports_data_test app php artisan test tests/Feature/ScheduledMatchSyncTest.php
+```
+
+These tests do not claim multi-host scheduler contention or production cron/process supervision has been exercised.
+
+## Worker Lifecycle and Process Supervision
+
+The `background` Compose profile starts managed worker and scheduler containers alongside the application. They share the application's PHP build and source mount, but expose no HTTP ports. PHP includes `pcntl` for worker signals and timeout alarms.
+
+```bash
+docker compose --profile background up -d --build app postgres worker scheduler
+docker compose logs -f worker scheduler
+# After deploying code, finish the current job and replace the worker:
+docker compose exec app php artisan queue:restart
+# Explicitly stop the background services:
+docker compose --profile background stop worker scheduler
+```
+
+`restart: unless-stopped` restarts a worker after both failure and a successful `queue:restart` exit. An `on-failure` policy alone would leave a gracefully exited worker stopped. Explicit Compose stop commands suppress automatic restart. `init: true` forwards signals and reaps subprocesses. The worker uses `--max-time=3600` to recycle its process after about an hour; Laravel checks this between jobs, not by interrupting the current job. Both services allow 75 seconds for graceful shutdown. The worker's 60-second job timeout is shorter than that grace period and the database's 90-second reservation window.
+
+Three clocks govern failure recovery:
+
+| Setting | Current value | Purpose |
+|---|---|---|
+| Job timeout | 60 seconds | Worker terminates execution that exceeds its budget |
+| Database queue `retry_after` | 90 seconds | An abandoned reservation becomes eligible for another worker |
+| Provider/date lock expiry | 90 seconds | Stale execution locks eventually allow recovery |
+
+A timeout kills the worker process; it does not follow the ordinary exception backoff path. The abandoned job waits for reservation expiry, while its lock survives until lock expiry. A replacement worker can retry it. The sync job keeps its 10-attempt budget; persistent timeouts eventually fail the job. Cleanup in PHP `finally` blocks cannot be assumed after a hard process kill. External side effects and cross-date persistence races still need their own safety policy.
+
+`queue:restart` writes a shared-cache marker. A long-lived worker finishes its current job, sees the marker, and exits successfully. Compose then starts a new PHP process that loads the current code. All workers and the restart command must use the same cache store and prefix. Source mounts and this profile are useful for development; a production release still needs immutable images, migration/deployment coordination, readiness checks, and a chosen platform scheduler. Avoid simultaneously running manual workers or `schedule:work` terminals unless you intend multiple instances.
+
+The lifecycle test suite launches real PHP daemon processes against the disposable PostgreSQL test database. A test-only fixture uses a one-second timeout, two-second lock and three-second reservation window to verify process death, reservation/lock survival, replacement retries, terminal failure, and subsequent healthy work. Another test verifies graceful cache-based restart and a replacement worker. The fixture lives under tests and is never dispatched by the application. Unlike the clock-controlled queue tests, these checks wait a few real seconds and require `pcntl`. `queue:work --once` is not used for timeout testing because Laravel installs timeout alarms in its daemon loop.
+
+```bash
+docker compose exec -e APP_ENV=testing -e DB_DATABASE=sports_data_test app php artisan test tests/Feature/Jobs/WorkerLifecycleTest.php
+```
+
+The cloud runtime uses its existing local image/network override. The worker extension was compiled and verified there; the regular Compose configuration was also validated. Production deployment and multi-host recovery have not been exercised.
 
 ## Seed Data
 
@@ -639,9 +717,11 @@ Entity resolution              In progress
 Match-level fault isolation    ✓
 Background jobs                ✓
 Database queues / overlap lock ✓
-Queue reliability tests        Implemented on feature branch
-Scheduler                      Next
-Production worker supervision  Planned
+Queue reliability tests        ✓ (merged in PR #11)
+Scheduler                      Implemented on feature branch
+Worker timeout / lifecycle     Implemented on feature branch
+Compose background supervision Implemented on feature branch
+Production deployment          Planned
 Redis caching                  Planned
 Performance testing            Planned
 AWS deployment                 Planned
@@ -649,30 +729,23 @@ Observability                  Planned
 
 ## Roadmap
 
-The next major milestones are:
-Match synchronization tests
-        ↓
-CI / GitHub Actions
-        ↓
-GET /api/v1/matches
-        ↓
-Entity resolution
-        ↓
-Background jobs / queues
-        ↓
-Redis caching
-        ↓
-Performance testing
-        ↓
-AWS deployment
-        ↓
-Observability
+The remaining milestones are:
+
+```text
+Review and deliver scheduled dispatch
+    → Real-provider HTTP integration
+    → Contextual entity resolution and review
+    → Redis caching and database performance
+    → API hardening
+    → Deployment and production supervision
+    → Observability
+```
 
 ## Next Milestone
 
-Add scheduled synchronization after reviewing the queue reliability changes. Define which enabled providers run, what date/timezone they synchronize, how often dispatch occurs, and whether duplicate pending jobs are acceptable. Test scheduled dispatch and discuss scheduler locks separately from job execution locks. Production process supervision follows as a separate operational lesson.
+Review and deliver the background-processing milestone: scheduled dispatch, daemon timeout enforcement and managed worker restart. Then integrate a real sports-data provider with HTTP timeouts, bounded retries, rate limits, fixture-based adapter tests and secure credential configuration. Production deployment remains a separate milestone.
 
-The detailed lesson roadmap and verified delivery status are in [the learning pipeline](docs/learning-pipeline.md).
+The detailed lesson roadmap and verified delivery status are in [the learning pipeline](docs/learning-pipeline.md). The lifecycle design is recorded in [ADR-003](docs/adr/003-background-processing-lifecycle.md).
 
 ## Status
 
