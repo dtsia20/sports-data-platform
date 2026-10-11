@@ -35,7 +35,9 @@ final class ApiFootballAdapterTest extends TestCase
 
         $matches = (new ApiFootballAdapter)->getMatches(new DateTimeImmutable('2026-10-11'));
 
-        $this->assertCount(1159, $matches);
+        $this->assertNotEmpty($payload['response']);
+        $this->assertSame(count($payload['response']), $payload['results']);
+        $this->assertCount(count($payload['response']), $matches);
         $first = $matches[0];
         $this->assertSame('1492408', $first->externalId);
         $this->assertSame('71', $first->competition->externalId);

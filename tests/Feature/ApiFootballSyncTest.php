@@ -94,27 +94,30 @@ final class ApiFootballSyncTest extends TestCase
     public function test_importing_mappings_recovers_all_saved_fixtures_without_duplicate_matches(): void
     {
         $payload = json_decode(file_get_contents($this->samplePath()), true, flags: JSON_THROW_ON_ERROR);
+        $fixtureCount = count($payload['response']);
+        $competitionCount = count(array_unique(array_column(array_column($payload['response'], 'league'), 'id')));
+        $this->assertGreaterThan(0, $fixtureCount);
         Http::fake(['*' => Http::response($payload)]);
 
         $this->artisan('sports:sync-api-football', ['--date' => '2026-10-11'])
-            ->expectsOutput('Processed 1159; succeeded 0; unresolved 1159.')
+            ->expectsOutput("Processed {$fixtureCount}; succeeded 0; unresolved {$fixtureCount}.")
             ->assertSuccessful();
         $this->assertDatabaseCount('matches', 0);
 
         $this->artisan('sports:import-api-football-mappings', ['file' => $this->samplePath()])
             ->assertSuccessful();
 
-        $this->assertSame(334, UnresolvedProviderEntity::where('status', 'resolved')->whereNotNull('resolved_at')->count());
+        $this->assertSame($competitionCount, UnresolvedProviderEntity::where('status', 'resolved')->whereNotNull('resolved_at')->count());
         $this->assertSame(0, UnresolvedProviderEntity::where('status', 'pending')->count());
 
         foreach ([1, 2] as $attempt) {
             $this->artisan('sports:sync-api-football', ['--date' => '2026-10-11'])
-                ->expectsOutput('Processed 1159; succeeded 1159; unresolved 0.')
+                ->expectsOutput("Processed {$fixtureCount}; succeeded {$fixtureCount}; unresolved 0.")
                 ->assertSuccessful();
         }
 
-        $this->assertDatabaseCount('matches', 1159);
-        $this->assertDatabaseCount('provider_match_references', 1159);
+        $this->assertDatabaseCount('matches', $fixtureCount);
+        $this->assertDatabaseCount('provider_match_references', $fixtureCount);
         Http::assertSentCount(3);
     }
 
