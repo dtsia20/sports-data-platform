@@ -62,7 +62,6 @@ External Sports Providers
 ```
 
 Database queue jobs and development workers are implemented. Future iterations will introduce:
-Scheduler
 Production worker supervision
 Redis
 Caching
@@ -429,7 +428,7 @@ docker compose exec app ./vendor/bin/pint
 Verify formatting without modifying files:
 docker compose exec app ./vendor/bin/pint --test
 
-The second command will eventually be used as part of CI.
+The formatting check also runs in CI.
 ## Testing
 
 Tests run with PHPUnit through Laravel:
@@ -499,7 +498,51 @@ Overlap protection uses a lock for the job class plus `(providerId, date)`. A co
 
 The 10-attempt budget includes releases caused by overlap contention. It gives retries some room, but cannot guarantee completion under sustained contention. Duplicate dispatch is allowed and serialized for the same provider/date; it is not deduplicated. Sequential synchronization is idempotent. Different dates can still refer to the same provider match, so this lock does not establish full concurrent persistence safety.
 
-The integration suite verifies real lock contention, unrelated jobs proceeding, lock expiry, transient recovery without duplicate matches, the complete 10-attempt failure lifecycle, unresolved mappings without retries, and timeout configuration relationships. It advances Laravel's clock instead of sleeping. It does not simulate process termination or simultaneous OS worker processes. Use a continuous worker to observe delayed retries manually; `--stop-when-empty` can exit before a delayed retry becomes available. Long-lived workers must be restarted after code changes (`php artisan queue:restart`). Scheduling and production worker supervision are not implemented yet.
+The integration suite verifies real lock contention, unrelated jobs proceeding, lock expiry, transient recovery without duplicate matches, the complete 10-attempt failure lifecycle, unresolved mappings without retries, and timeout configuration relationships. It advances Laravel's clock instead of sleeping. It does not simulate process termination or simultaneous OS worker processes. Use a continuous worker to observe delayed retries manually; `--stop-when-empty` can exit before a delayed retry becomes available. Long-lived workers must be restarted after code changes (`php artisan queue:restart`). Scheduled dispatch is implemented below. Production worker supervision is not implemented yet.
+
+## Scheduled Synchronization
+
+Every five minutes, Laravel runs `sports:sync-matches`. This command selects enabled providers and dispatches one `SyncProviderMatchesJob` for each, using today's date in UTC. The date is calculated once per invocation to keep the batch consistent across midnight. Providers are read in ID batches, and the command performs no external HTTP requests or match persistence. The configured queue connection must be `database` to execute asynchronously.
+
+```text
+Scheduler (every five minutes, UTC)
+    → sports:sync-matches (select enabled providers, dispatch jobs)
+    → database queue
+    → SyncProviderMatchesJob (provider/date execution lock)
+    → SyncMatchesService (resolve identities, persist matches, report)
+```
+
+Inspect the schedule or dispatch manually:
+
+```bash
+docker compose exec app php artisan schedule:list
+docker compose exec app php artisan sports:sync-matches
+# Run the registered event immediately, even outside its due time:
+docker compose exec app php artisan schedule:test --name=sports:sync-matches
+```
+
+For development, run these in separate terminals after migrations and seeding:
+
+```bash
+docker compose exec app php artisan schedule:work
+docker compose exec app php artisan queue:work database --sleep=1 --timeout=60
+```
+
+In production, configure the hosting platform to invoke `php artisan schedule:run` in the application directory every minute, and supervise the queue worker separately. This repository does not install cron or a production process supervisor. Stop development processes with Ctrl+C; queued jobs remain in the database. Running `schedule:run` manually outside a five-minute boundary correctly does nothing.
+
+The schedule uses `onOneServer()` to choose one dispatcher per due tick across scheduler instances, and `withoutOverlapping(5)` to avoid overlapping dispatch commands. Both rely on the shared cache; use `CACHE_STORE=database` and the same database/cache prefix across hosts. The five-minute dispatch lock expiry allows recovery after a crashed dispatcher, and assumes the dispatch command finishes within that window. These locks protect the dispatch command; the job's provider/date lock protects synchronization. Manual command calls do not acquire scheduler locks.
+
+Duplicate pending jobs remain allowed by design. If a previous sync is delayed, the next tick can enqueue another. The job lock prevents simultaneous execution for the same provider/date, but does not deduplicate the queue or eliminate every persistence race. Partial dispatch before an exception can also leave some jobs queued; a later tick can dispatch them again. Observe queue backlog before deciding whether unique jobs or a different dispatch policy is needed.
+
+The fake adapter still returns its fixed October 4 fixture regardless of requested date. Scheduling today's date proves orchestration; it does not establish a real provider's date-filtering behavior.
+
+Tests cover enabled-provider selection, no enabled providers, UTC date boundaries, duplicate dispatch policy, actual database enqueueing, and five-minute due/not-due boundaries with scheduler lock configuration:
+
+```bash
+docker compose exec -e APP_ENV=testing -e DB_DATABASE=sports_data_test app php artisan test tests/Feature/ScheduledMatchSyncTest.php
+```
+
+These tests do not claim multi-host scheduler contention or production cron/process supervision has been exercised.
 
 ## Seed Data
 
@@ -639,8 +682,8 @@ Entity resolution              In progress
 Match-level fault isolation    ✓
 Background jobs                ✓
 Database queues / overlap lock ✓
-Queue reliability tests        Implemented on feature branch
-Scheduler                      Next
+Queue reliability tests        ✓ (merged in PR #11)
+Scheduler                      Implemented on feature branch
 Production worker supervision  Planned
 Redis caching                  Planned
 Performance testing            Planned
@@ -649,28 +692,22 @@ Observability                  Planned
 
 ## Roadmap
 
-The next major milestones are:
-Match synchronization tests
-        ↓
-CI / GitHub Actions
-        ↓
-GET /api/v1/matches
-        ↓
-Entity resolution
-        ↓
-Background jobs / queues
-        ↓
-Redis caching
-        ↓
-Performance testing
-        ↓
-AWS deployment
-        ↓
-Observability
+The remaining milestones are:
+
+```text
+Review and deliver scheduled dispatch
+    → Worker lifecycle and timeouts
+    → Real-provider HTTP integration
+    → Contextual entity resolution and review
+    → Redis caching and database performance
+    → API hardening
+    → Deployment and production supervision
+    → Observability
+```
 
 ## Next Milestone
 
-Add scheduled synchronization after reviewing the queue reliability changes. Define which enabled providers run, what date/timezone they synchronize, how often dispatch occurs, and whether duplicate pending jobs are acceptable. Test scheduled dispatch and discuss scheduler locks separately from job execution locks. Production process supervision follows as a separate operational lesson.
+Review and deliver scheduled synchronization, then study worker process lifecycle and timeouts. Add PHP `pcntl` support to the runtime, verify timeout behavior, and define how workers restart after failures or deployment. Production process supervision is separate from scheduled dispatch. Real-provider HTTP integration follows once these execution boundaries are understood.
 
 The detailed lesson roadmap and verified delivery status are in [the learning pipeline](docs/learning-pipeline.md).
 
