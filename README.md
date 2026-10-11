@@ -502,10 +502,10 @@ The integration suite verifies real lock contention, unrelated jobs proceeding, 
 
 ## Scheduled Synchronization
 
-Every five minutes, Laravel runs `sports:sync-matches`. This command selects enabled providers and dispatches one `SyncProviderMatchesJob` for each, using today's date in UTC. The date is calculated once per invocation to keep the batch consistent across midnight. Providers are read in ID batches, and the command performs no external HTTP requests or match persistence. The configured queue connection must be `database` to execute asynchronously.
+Every 30 minutes, Laravel runs `sports:sync-matches`. This command selects enabled providers and dispatches one `SyncProviderMatchesJob` for each, using today's date in UTC. The date is calculated once per invocation to keep the batch consistent across midnight. Providers are read in ID batches, and the command performs no external HTTP requests or match persistence. The configured queue connection must be `database` to execute asynchronously.
 
 ```text
-Scheduler (every five minutes, UTC)
+Scheduler (every 30 minutes, UTC)
     → sports:sync-matches (select enabled providers, dispatch jobs)
     → database queue
     → SyncProviderMatchesJob (provider/date execution lock)
@@ -528,7 +528,7 @@ docker compose exec app php artisan schedule:work
 docker compose exec app php artisan queue:work database --sleep=1 --timeout=60
 ```
 
-In production, configure the hosting platform to invoke `php artisan schedule:run` in the application directory every minute, and supervise the queue worker separately. This repository does not install cron or a production process supervisor. Stop development processes with Ctrl+C; queued jobs remain in the database. Running `schedule:run` manually outside a five-minute boundary correctly does nothing.
+In production, configure the hosting platform to invoke `php artisan schedule:run` in the application directory every minute, and supervise the queue worker separately. This repository does not install cron or a production process supervisor. Stop development processes with Ctrl+C; queued jobs remain in the database. Running `schedule:run` manually outside a 30-minute boundary correctly does nothing.
 
 The schedule uses `onOneServer()` to choose one dispatcher per due tick across scheduler instances, and `withoutOverlapping(5)` to avoid overlapping dispatch commands. Both rely on the shared cache; use `CACHE_STORE=database` and the same database/cache prefix across hosts. The five-minute dispatch lock expiry allows recovery after a crashed dispatcher, and assumes the dispatch command finishes within that window. These locks protect the dispatch command; the job's provider/date lock protects synchronization. Manual command calls do not acquire scheduler locks.
 
@@ -536,7 +536,7 @@ Duplicate pending jobs remain allowed by design. If a previous sync is delayed, 
 
 The fake adapter still returns its fixed October 4 fixture regardless of requested date. Scheduling today's date proves orchestration; it does not establish a real provider's date-filtering behavior.
 
-Tests cover enabled-provider selection, no enabled providers, UTC date boundaries, duplicate dispatch policy, actual database enqueueing, and five-minute due/not-due boundaries with scheduler lock configuration:
+Tests cover enabled-provider selection, no enabled providers, UTC date boundaries, duplicate dispatch policy, actual database enqueueing, and 30-minute due/not-due boundaries with scheduler lock configuration:
 
 ```bash
 docker compose exec -e APP_ENV=testing -e DB_DATABASE=sports_data_test app php artisan test tests/Feature/ScheduledMatchSyncTest.php
@@ -741,9 +741,64 @@ Review and deliver scheduled dispatch
     → Observability
 ```
 
+## API-Football lesson: HTTP boundary
+
+`ApiFootballAdapter` implements `SportsDataProviderInterface` and converts the `/fixtures` response into the existing domain DTOs. Provider IDs become strings, provider statuses become domain statuses, and nullable goals remain nullable. Invalid payloads and unknown statuses fail explicitly instead of silently losing fixtures.
+
+Set `API_FOOTBALL_KEY` in your private `.env` for eventual live use; the committed `.env.example` contains only an empty placeholder. The adapter uses a 3-second connection timeout and a 10-second request timeout. Connection failures and HTTP 5xx responses get one retry (two total attempts); HTTP 401 and 429 are surfaced without immediate retries. HTTP 200 responses containing API errors also fail. HTTP timeouts remain below the job's 60-second timeout.
+
+Run the lesson without an API key or quota usage:
+
+```bash
+docker compose exec app php artisan test --compact tests/Feature/Infrastructure/ApiFootballAdapterTest.php
+```
+
+The tests use `Http::fake()` and the saved 1,159-fixture response. `ProviderSyncServiceFactory` selects an adapter by provider slug; unsupported providers fail explicitly. Fake-provider tests and synchronization remain isolated from live API-Football calls.
+
+### Try real data locally
+
+After the normal dependency, database migration and seed setup, put the following settings in your private `.env`:
+
+```dotenv
+API_FOOTBALL_KEY=your-private-key
+API_FOOTBALL_DAILY_LIMIT=90
+API_FOOTBALL_SCHEDULED=false
+CACHE_STORE=database
+QUEUE_CONNECTION=database
+```
+
+Import the saved sample's competition/team mappings, then synchronize a date supported by your account:
+
+```bash
+docker compose exec app php artisan config:clear
+docker compose exec app php artisan sports:import-api-football-mappings tests/Fixtures/api-football/fixtures-2026-10-11.json
+docker compose exec app php artisan sports:sync-api-football --date=2026-10-11
+```
+
+Check `http://localhost:8000/api/v1/matches?date=2026-10-11`. The command reports processed, succeeded and unresolved counts. It shares the queued job's provider/date overlap lock. Unmapped live entities are recorded and skipped; save another successful response and explicitly import its mappings if needed. The lesson importer uses stable slugs such as `api-football-team-126`, preserves existing references, and deliberately creates separate provider-scoped entities instead of guessing cross-provider identity from names. Canonical cross-provider reconciliation remains a later lesson.
+
+### Enable the 30-minute schedule
+
+After a manual sync succeeds, set `API_FOOTBALL_SCHEDULED=true` in `.env`, then run:
+
+```bash
+docker compose exec app php artisan config:clear
+docker compose exec app php artisan sports:api-football-schedule on
+docker compose --profile background up -d worker scheduler
+docker compose exec app php artisan queue:restart
+docker compose exec app php artisan schedule:list
+docker compose logs --tail=50 worker
+```
+
+The schedule runs at minute 0 and 30 in UTC. One fixtures request per run means 48 normal requests per day. To disable further scheduled dispatch, run `php artisan sports:api-football-schedule off` inside the app container; already queued jobs remain executable. Manual sync is available even while scheduled dispatch is disabled.
+
+A shared-cache lock serializes request-budget reservations. The default ceiling is 90 requests per UTC calendar day, capped at 90 even if configured higher, leaving nominal room for external testing. Every attempted HTTP request, including retries and failed connections, consumes a reservation. A 429 or an API-error body closes the local budget for the rest of that UTC day; missing keys, budget exhaustion and API-error bodies fail queued jobs without retries. Authentication/client HTTP errors also fail immediately; server/connection failures retain bounded HTTP retries and existing queue retries, all subject to the budget.
+
+This counter tracks this application's attempts only. Postman calls, other deployments with separate cache prefixes, and the provider's actual reset window are outside that count. Keep one shared persistent database cache across app, worker and scheduler, do not clear it to bypass the budget, and verify your account's remaining quota/reset policy. Tests prove the local behavior; live requests require your private key and supported plan coverage.
+
 ## Next Milestone
 
-Review and deliver the background-processing milestone: scheduled dispatch, daemon timeout enforcement and managed worker restart. Then integrate a real sports-data provider with HTTP timeouts, bounded retries, rate limits, fixture-based adapter tests and secure credential configuration. Production deployment remains a separate milestone.
+The background-processing milestone was merged in PR #12. API-Football adapter selection, manual sync, explicit mapping import, request budgets and opt-in 30-minute scheduling are implemented on the feature branch. Next, verify live data locally, then review one combined integration PR. Contextual cross-provider entity resolution and production deployment remain later lessons.
 
 The detailed lesson roadmap and verified delivery status are in [the learning pipeline](docs/learning-pipeline.md). The lifecycle design is recorded in [ADR-003](docs/adr/003-background-processing-lifecycle.md).
 

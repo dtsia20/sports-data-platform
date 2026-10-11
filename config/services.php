@@ -1,5 +1,8 @@
 <?php
 
+use App\Domain\Matches\Contracts\SportsDataProviderInterface;
+use App\Infrastructure\SportsData\ApiFootball\ApiFootballAdapter;
+
 return [
 
     /*
@@ -13,6 +16,19 @@ return [
     | a conventional file to locate the various service credentials.
     |
     */
+
+    'sports_data' => [
+        'adapters' => [
+            'fake-provider-a' => SportsDataProviderInterface::class,
+            'api-football' => ApiFootballAdapter::class,
+        ],
+    ],
+
+    'api_football' => [
+        'key' => env('API_FOOTBALL_KEY'),
+        'daily_limit' => env('API_FOOTBALL_DAILY_LIMIT', 90),
+        'scheduled' => env('API_FOOTBALL_SCHEDULED', false),
+    ],
 
     'postmark' => [
         'key' => env('POSTMARK_API_KEY'),

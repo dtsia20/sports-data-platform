@@ -87,23 +87,23 @@ final class ScheduledMatchSyncTest extends TestCase
         Queue::assertPushed(SyncProviderMatchesJob::class, fn (SyncProviderMatchesJob $job): bool => $job->providerId === $provider->id && $job->date === now('UTC')->toDateString());
     }
 
-    public function test_the_schedule_is_due_every_five_minutes_in_utc_with_dispatch_locks(): void
+    public function test_the_schedule_is_due_every_thirty_minutes_in_utc_with_dispatch_locks(): void
     {
         $events = collect(app(Schedule::class)->events())
             ->filter(fn (Event $event): bool => str_contains($event->command ?? '', 'sports:sync-matches'));
         self::assertCount(1, $events);
         $event = $events->first();
-        self::assertSame('*/5 * * * *', $event->expression);
+        self::assertSame('*/30 * * * *', $event->expression);
         self::assertSame('UTC', $event->timezone);
         self::assertTrue($event->withoutOverlapping);
         self::assertSame(5, $event->expiresAt);
         self::assertTrue($event->onOneServer);
 
-        $this->travelTo(CarbonImmutable::parse('2026-10-11T23:55:00Z'));
+        $this->travelTo(CarbonImmutable::parse('2026-10-11T23:30:00Z'));
         self::assertTrue($event->isDue($this->app));
         $this->travel(1)->minutes();
         self::assertFalse($event->isDue($this->app));
-        $this->travel(4)->minutes();
+        $this->travel(29)->minutes();
         self::assertTrue($event->isDue($this->app));
     }
 

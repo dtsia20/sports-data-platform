@@ -172,3 +172,13 @@ CI uses PHP 8.5 + PostgreSQL 17 on GitHub Actions. Compare branch and current fi
 ## 8. Instructions for future ChatGPT sessions in this Project
 
 Start by reading this roadmap and checking repo's latest `main` and feature branch, recent PR/CI status, and relevant current files. Do not assume a downloadable patch has been applied or merged. Continue from the remaining delivery tasks in Section 4, then the real-provider integration lesson. Explain one meaningful architecture decision and its alternatives, implement incrementally with the user, test, and review. At the conclusion of each topic **update the root README** and refresh the statuses in this pipeline. Distinguish verified from planned work. Keep content accurate, practical and portfolio-oriented. Do not invent tool executions or successful deployments.
+
+## API-Football integration progress (2026-10-11)
+
+PR #12 is merged on main and the saved API response is committed there. PR #13 was closed at the learner's request so this feature can be delivered in one combined PR later, on `feat/api-football-adapter`.
+
+Implemented: HTTP adapter and fixture-based tests; provider-specific selection; explicit, idempotent sample mapping import; manual sync sharing the queue overlap lock; opt-in live dispatch every 30 minutes; shared-cache UTC request budget capped at 90 including retries; permanent queue failure for credentials/client/quota errors. Unknown live entities continue to be recorded and skipped. Sample-imported canonical entities are provider-scoped and are not automatically merged by name.
+
+The saved-response integration test proves persistence, repeated-sync idempotency and API visibility. Live credentials are absent in the cloud environment, so real requests and account reset/coverage behavior remain to be checked locally with the README commands. No live schedule has been activated here. The next delivery step is local live-data validation, then one combined PR; cross-provider contextual resolution is the next architecture lesson.
+
+Validation: full PostgreSQL suite passes with **63 tests and 332 assertions**; Pint and diff checks pass. Secure cloud secret requirement is saved for `API_FOOTBALL_KEY` with destination `v3.football.api-sports.io`; secure value entry, runtime activation and live verification remain pending.
