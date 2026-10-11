@@ -37,6 +37,9 @@ final class SyncApiFootball extends Command
         try {
             $report = $factory->forProvider($provider)->sync($provider, new DateTimeImmutable($date));
             $this->info("Processed {$report->processed}; succeeded {$report->succeeded}; unresolved {$report->unresolved}.");
+            if ($report->unresolved > 0) {
+                $this->warn('Unresolved matches are missing competition or team mappings. Import mappings from a saved successful fixture response using sports:import-api-football-mappings <file>, then rerun this sync.');
+            }
         } finally {
             $lock->release();
         }

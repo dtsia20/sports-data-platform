@@ -4,7 +4,9 @@ declare(strict_types=1);
 
 namespace Tests\Feature;
 
+use App\Application\Providers\Services\RecordUnresolvedEntityService;
 use App\Domain\Providers\Models\SportsDataProvider;
+use App\Domain\Providers\Models\UnresolvedProviderEntity;
 use App\Domain\Teams\Models\Team;
 use App\Infrastructure\SportsData\ApiFootball\ApiFootballAdapter;
 use App\Infrastructure\SportsData\ApiFootball\ApiFootballUnavailable;
@@ -82,9 +84,65 @@ final class ApiFootballSyncTest extends TestCase
     {
         $this->fakeFirstFixture();
         $this->artisan('sports:sync-api-football', ['--date' => '2026-10-11'])
-            ->expectsOutput('Processed 1; succeeded 0; unresolved 1.')->assertSuccessful();
+            ->expectsOutput('Processed 1; succeeded 0; unresolved 1.')
+            ->expectsOutput('Unresolved matches are missing competition or team mappings. Import mappings from a saved successful fixture response using sports:import-api-football-mappings <file>, then rerun this sync.')
+            ->assertSuccessful();
         $this->assertDatabaseCount('matches', 0);
         $this->assertDatabaseCount('unresolved_provider_entities', 1);
+    }
+
+    public function test_importing_mappings_recovers_all_saved_fixtures_without_duplicate_matches(): void
+    {
+        $payload = json_decode(file_get_contents($this->samplePath()), true, flags: JSON_THROW_ON_ERROR);
+        Http::fake(['*' => Http::response($payload)]);
+
+        $this->artisan('sports:sync-api-football', ['--date' => '2026-10-11'])
+            ->expectsOutput('Processed 1159; succeeded 0; unresolved 1159.')
+            ->assertSuccessful();
+        $this->assertDatabaseCount('matches', 0);
+
+        $this->artisan('sports:import-api-football-mappings', ['file' => $this->samplePath()])
+            ->assertSuccessful();
+
+        $this->assertSame(334, UnresolvedProviderEntity::where('status', 'resolved')->whereNotNull('resolved_at')->count());
+        $this->assertSame(0, UnresolvedProviderEntity::where('status', 'pending')->count());
+
+        foreach ([1, 2] as $attempt) {
+            $this->artisan('sports:sync-api-football', ['--date' => '2026-10-11'])
+                ->expectsOutput('Processed 1159; succeeded 1159; unresolved 0.')
+                ->assertSuccessful();
+        }
+
+        $this->assertDatabaseCount('matches', 1159);
+        $this->assertDatabaseCount('provider_match_references', 1159);
+        Http::assertSentCount(3);
+    }
+
+    public function test_import_resolves_only_mapped_entities_for_this_provider_and_preserves_resolution_time(): void
+    {
+        $provider = SportsDataProvider::create(['slug' => 'api-football', 'name' => 'API-Football', 'enabled' => false]);
+        $otherProvider = SportsDataProvider::create(['slug' => 'other-provider', 'name' => 'Other Provider', 'enabled' => false]);
+        $recorder = new RecordUnresolvedEntityService;
+        $mappedTeam = $recorder->record($provider, 'team', '126', 'Sao Paulo');
+        $unmappedTeam = $recorder->record($provider, 'team', '99999999', 'Unmapped Team');
+        $otherProviderTeam = $recorder->record($otherProvider, 'team', '126', 'Other Team');
+
+        $this->artisan('sports:import-api-football-mappings', ['file' => $this->mappingPath()])->assertSuccessful();
+
+        $mappedTeam->refresh();
+        $this->assertSame('resolved', $mappedTeam->status);
+        $this->assertNotNull($mappedTeam->resolved_at);
+        $resolvedAt = $mappedTeam->resolved_at->toIso8601String();
+        foreach ([$unmappedTeam, $otherProviderTeam] as $unresolvedTeam) {
+            $unresolvedTeam->refresh();
+            $this->assertSame('pending', $unresolvedTeam->status);
+            $this->assertNull($unresolvedTeam->resolved_at);
+        }
+
+        $this->travel(1)->hours();
+        $this->artisan('sports:import-api-football-mappings', ['file' => $this->mappingPath()])->assertSuccessful();
+        $this->assertSame($resolvedAt, $mappedTeam->refresh()->resolved_at->toIso8601String());
+        Http::assertNothingSent();
     }
 
     public function test_manual_sync_respects_the_queue_overlap_lock(): void

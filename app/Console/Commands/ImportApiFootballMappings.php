@@ -8,6 +8,7 @@ use App\Domain\Competitions\Models\Competition;
 use App\Domain\Providers\Models\ProviderCompetitionReference;
 use App\Domain\Providers\Models\ProviderTeamReference;
 use App\Domain\Providers\Models\SportsDataProvider;
+use App\Domain\Providers\Models\UnresolvedProviderEntity;
 use App\Domain\Teams\Models\Team;
 use Illuminate\Console\Command;
 use Illuminate\Support\Facades\DB;
@@ -57,6 +58,15 @@ final class ImportApiFootballMappings extends Command
                         ProviderTeamReference::query()->create(['provider_id' => $provider->id, 'external_id' => (string) $entity['id'], 'team_id' => $team->id]);
                     }
                 }
+            }
+
+            foreach (['competition' => ProviderCompetitionReference::class, 'team' => ProviderTeamReference::class] as $entityType => $referenceModel) {
+                UnresolvedProviderEntity::query()
+                    ->where('provider_id', $provider->id)
+                    ->where('entity_type', $entityType)
+                    ->where('status', 'pending')
+                    ->whereIn('external_id', $referenceModel::query()->select('external_id')->where('provider_id', $provider->id))
+                    ->update(['status' => 'resolved', 'resolved_at' => now()]);
             }
         });
         $this->info('Imported API-Football lesson mappings. Existing mappings were preserved; live scheduling remains opt-in.');
