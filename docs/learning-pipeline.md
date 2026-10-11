@@ -113,7 +113,7 @@ Choose a provider and review its authentication, date semantics, limits and term
 | 10 | Fault isolation and ingestion results | Completed basic `MatchSyncReport` and expected-mapping skip behavior; extend reporting when needed | Production ingestion resilience |
 | 11 | Laravel queues and scheduling | Delivered in PRs #11/#12; interval updated to 30 minutes in PR #14 | Asynchronous processing |
 | 12 | Real provider integration | Delivered in PR #14; learner verified live local sync | External API engineering |
-| 13 | Contextual entity resolution | Active: context, audited review and candidate ranking implemented; aliases and richer canonical context planned | Identity reconciliation |
+| 13 | Contextual entity resolution | Context, audited review, ranking and aliases implemented; combined PR pending; richer canonical context planned | Identity reconciliation |
 | 14 | Redis and caching | Cache keys, TTL/invalidation, hot API reads, stale/fresh behavior, query impact measurements | Performance engineering |
 | 15 | Database performance | Index analysis with EXPLAIN ANALYZE, efficient filtering/pagination, N+1 checks, realistic load test | Scalability evidence |
 | 16 | API hardening | Stable contracts, documented errors, pagination guarantees, OpenAPI documentation, optional authentication/rate limits | Consumer-ready API |
@@ -189,7 +189,7 @@ PR #14 is merged on main. The learner reports successful local live synchronizat
 
 Branch `feat/entity-resolution-review` implements the first phase of module 13: provider context in DTOs and pending records, a bounded pending-list command, explicit approval into existing canonical entities, transactional mapping/status/audit persistence, idempotent repeat approvals and conflict rejection. The workflow leaves existing imported entities and mappings untouched.
 
-The concrete exercise is to inspect a pending team, verify its competition context and existing canonical identity, approve the mapping, then rerun sync and observe the formerly skipped match through the API. Candidate ranking and review labels are implemented below; curated aliases and richer canonical context are the next exercise. This branch has not been committed, pushed or opened as a PR.
+The concrete exercise is to inspect a pending team, verify its competition context and existing canonical identity, approve the mapping, then rerun sync and observe the formerly skipped match through the API. Candidate ranking and review labels are implemented below; curated aliases are implemented below; richer canonical context is the next exercise. Review and ranking were committed as `5c36b3d`; alias work and combined delivery follow.
 
 Validation: **72 PostgreSQL tests passed, 404 assertions**; Pint and diff checks passed. The development audit-table migration and bounded pending-list command also executed successfully.
 
@@ -198,3 +198,9 @@ Validation: **72 PostgreSQL tests passed, 404 assertions**; Pint and diff checks
 Implemented `sports:entity-candidates`: deterministic, read-only ranking with explained name and mapped-competition match-history evidence. Name-only candidates remain weak, tied scores are ambiguous even beyond the output limit, and same-provider target conflicts are excluded. Country/season are not guessed. Ranking reads local data in batches and retains at most 20 suggestions, but still scans eligible canonical records. Seven focused tests verify ranking and uncertainty behavior; the approval workflow remains explicit.
 
 Candidate exercise validation: full PostgreSQL suite **79 tests passed, 432 assertions**; Pint and diff checks passed. No live API requests or provider mapping changes were made by the candidate lesson.
+
+### Curated alias exercise and milestone delivery
+
+Provider-scoped aliases support verified alternative names for existing team/competition records. Add/revoke commands retain reviewer/reason metadata, repeated operations preserve their original evidence, and aliases contribute name evidence without automatically approving mappings. Revocation stops alias suggestions and retains the record; it cannot silently reactivate. Database foreign keys, target checks and normalized uniqueness protect alias identity.
+
+The current deliverable is the combined review, candidate-ranking and alias milestone. Richer canonical country/season metadata, authenticated reviewer identity, mapping corrections and canonical duplicate merging remain later exercises. Final validation: **86 PostgreSQL tests passed, 461 assertions**; Pint and diff checks passed. Both new migrations were applied successfully in the development database. The combined branch is ready for PR review; CI and merge remain pending.

@@ -6,6 +6,7 @@ namespace App\Domain\Competitions\Models;
 
 use App\Domain\Matches\Models\SportsMatch;
 use App\Domain\Providers\Models\ProviderCompetitionReference;
+use App\Domain\Providers\Models\ProviderEntityAlias;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 
@@ -15,6 +16,11 @@ final class Competition extends Model
         'name',
         'slug',
     ];
+
+    public function providerAliases(): HasMany
+    {
+        return $this->hasMany(ProviderEntityAlias::class);
+    }
 
     public function providerReferences(): HasMany
     {

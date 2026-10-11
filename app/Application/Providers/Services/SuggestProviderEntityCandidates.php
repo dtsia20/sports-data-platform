@@ -6,9 +6,9 @@ namespace App\Application\Providers\Services;
 
 use App\Domain\Competitions\Models\Competition;
 use App\Domain\Providers\Models\ProviderCompetitionReference;
+use App\Domain\Providers\Models\ProviderEntityAlias;
 use App\Domain\Providers\Models\UnresolvedProviderEntity;
 use App\Domain\Teams\Models\Team;
-use Illuminate\Support\Str;
 use InvalidArgumentException;
 
 final class SuggestProviderEntityCandidates
@@ -29,11 +29,12 @@ final class SuggestProviderEntityCandidates
         if ($entity->status !== 'pending') {
             return [];
         }
-        $name = $this->normalize($entity->external_name);
+        $name = ProviderEntityAlias::normalizeName($entity->external_name);
         if ($name === '') {
             return [];
         }
         $query = $class::query()->whereDoesntHave('providerReferences', fn ($references) => $references->where('provider_id', $entity->provider_id));
+        $query->with(['providerAliases' => fn ($aliases) => $aliases->where('provider_id', $entity->provider_id)->whereNull('revoked_at')->where('normalized_name', $name)]);
         $competitionId = null;
         if ($entity->entity_type === 'team') {
             $externalCompetitionId = $entity->context['competition_external_id'] ?? null;
@@ -51,13 +52,14 @@ final class SuggestProviderEntityCandidates
         $candidates = [];
         $scoreCounts = [];
         foreach ($query->lazyById(250) as $canonical) {
-            $canonicalName = $this->normalize($canonical->name);
+            $canonicalName = ProviderEntityAlias::normalizeName($canonical->name);
             $exact = $name === $canonicalName;
-            $score = $exact ? 50 : $this->tokenScore($name, $canonicalName);
+            $alias = $canonical->providerAliases->first();
+            $score = ($exact || $alias !== null) ? 50 : $this->tokenScore($name, $canonicalName);
             if ($score < 25) {
                 continue;
             }
-            $evidence = [$exact ? 'Exact normalized name (+50).' : "Shared name tokens (+{$score})."];
+            $evidence = [$exact ? 'Exact normalized name (+50).' : ($alias !== null ? "Curated provider alias {$alias->id}: {$alias->name} (+50); reviewer {$alias->reviewer}; evidence: {$alias->reason}" : "Shared name tokens (+{$score}).")];
             if ($competitionId !== null && ($canonical->observed_home || $canonical->observed_away)) {
                 $score += 40;
                 $evidence[] = "Observed in matches for mapped competition {$competitionId} (+40); current season membership unverified.";
@@ -81,11 +83,6 @@ final class SuggestProviderEntityCandidates
         unset($candidate);
 
         return $candidates;
-    }
-
-    private function normalize(string $name): string
-    {
-        return trim(preg_replace('/[^a-z0-9]+/', ' ', Str::lower(Str::ascii($name))));
     }
 
     private function tokenScore(string $name, string $canonicalName): int
