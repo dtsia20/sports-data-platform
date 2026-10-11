@@ -59,13 +59,13 @@ Guiding invariant: provider-specific IDs never live inside canonical team/compet
 | 11B | Retry and failure lifecycle | Transient recovery and all 10 persistent-failure attempts, ending in `failed_jobs` | Merged in PR #11; PostgreSQL integration suite verified |
 | 11C | Overlap protection | Provider/date middleware, real PostgreSQL lock contention, independent keys and stale-lock expiry | Base implementation merged in PR #10; integration tests merged in PR #11 |
 | 11D | Scheduled dispatch | Enabled-provider selection, today in UTC, five-minute schedule, scheduler locks | Implemented on `feat/scheduled-match-sync`; delivery pending |
-| 11E | Worker lifecycle and production supervision | Process timeouts, restarts, supervision and deployment | Next lesson; not implemented |
+| 11E | Worker lifecycle and Compose supervision | `pcntl`, real timeout/replacement tests, shared-cache restart, optional managed worker/scheduler services | Implemented on `feat/scheduled-match-sync`; production deployment unverified |
 
 **GitHub state verified October 11, 2026:** `origin/main` at `c686f52` includes merged PR #11. This lesson uses `feat/scheduled-match-sync` based on that commit. Queue reliability is delivered. Scheduler changes are on the feature branch; no scheduler PR, CI or merge is claimed yet.
 
 **Open entity-resolution refinements:** manual mapping/conflict review, candidate ranking and atomic concurrent persistence remain future work. Resolvers currently use existing provider mappings and record unknown entities; they do not implement automatic contextual matching.
 
-## 4. Current active milestone — scheduled match synchronization
+## 4. Current active milestone — deliver background processing
 
 **Working branch:** `feat/scheduled-match-sync`.
 
@@ -89,20 +89,29 @@ Guiding invariant: provider-specific IDs never live inside canonical team/compet
 - [x] Updated README commands, architecture and operational limitations.
 - [x] Scheduler suite: **6 tests passed, 28 assertions**. Full PostgreSQL suite: **32 tests passed, 211 assertions**. Pint passed across 63 PHP files.
 - [x] `schedule:list` showed the five-minute event. `schedule:test --name=sports:sync-matches` invoked the registered event and persisted one development queue job; a real one-shot database worker completed it, leaving zero queued/failed jobs and one canonical fixture match.
-- [ ] Commit, push, open PR, verify CI, review and merge before marking this lesson delivered.
+- [ ] Open a PR for `feat/scheduled-match-sync`, verify CI, review and merge before marking the milestone delivered. The branch combines scheduled dispatch with worker lifecycle and Compose supervision.
 
-Tests do not establish production cron operation, simultaneous multi-host scheduler behavior, or process timeout enforcement. The current PHP image lacks `pcntl`. No cron or production supervisor is installed by this lesson.
+### Worker lifecycle lesson
 
-### Next focused lesson: worker process lifecycle and timeouts
+- [x] Added `pcntl` to the PHP Dockerfile and CI configuration; compiled and verified it in the cloud runtime.
+- [x] Added separate-process tests for enforced timeout, abandoned reservations and locks, replacement retries, permanent failure, and subsequent healthy work.
+- [x] Added a real daemon restart test using the shared-cache `queue:restart` marker.
+- [x] Added optional Compose `background` services with `init`, `restart: unless-stopped`, a 75-second shutdown grace period and hourly worker recycling.
+- [x] Lifecycle subprocess suite: **2 tests passed, 22 assertions**. Full PostgreSQL suite: **34 tests passed, 233 assertions**. Pint passed across 65 PHP files.
+- [x] Validated regular and cloud-override Compose configurations; started worker and scheduler services, ran scheduled dispatch through the managed worker, verified Docker replaced the worker after `queue:restart`, and explicitly stopped both background services afterward.
 
-Add and verify `pcntl` support, demonstrate an enforced job timeout and recovery, and discuss process supervision and worker restarts on deployment. Keep operational supervision separate from scheduler timing. Then move to real-provider HTTP timeouts, retry policies, rate limits and fixture-based adapter tests.
+Timeout tests use a one-second timeout/two attempts rather than waiting for the application's 60-second timeout/10 attempts. They use actual wall-clock time and Linux process signals, not simulated time. `--once` does not exercise Laravel's daemon timeout alarms. The fixture is test-only. Production cron, release deployment and multi-host recovery remain unverified.
+
+### Next focused lesson: real-provider HTTP integration
+
+Choose a provider and review its authentication, date semantics, limits and terms. Start with sanitized response fixtures and adapter tests. Define HTTP timeouts shorter than the job timeout, bounded retry/rate-limit behavior, and how normalized data enters the existing synchronization service. Keep live credentials in secure configuration; do not embed them in code or tests.
 
 ## 5. Next modules — dependency order
 
 | Phase | Topic | Build outcome / tests | Portfolio value |
 |---|---|---|---|
 | 10 | Fault isolation and ingestion results | Completed basic `MatchSyncReport` and expected-mapping skip behavior; extend reporting when needed | Production ingestion resilience |
-| 11 | Laravel queues and scheduling | **Active:** queue reliability merged in PR #11; review/deliver scheduled dispatch, then worker lifecycle | Asynchronous processing |
+| 11 | Laravel queues and scheduling | **Active:** queue reliability merged in PR #11; review/deliver scheduler and worker lifecycle, then real-provider integration | Asynchronous processing |
 | 12 | Real provider integration | HTTP client, timeout/retry policies, rate limiting, fixture-based adapter tests, secret management | External API engineering |
 | 13 | Contextual entity resolution | Candidate ranking, aliases, competition/country context, confidence thresholds, review policy and audit history | Identity reconciliation |
 | 14 | Redis and caching | Cache keys, TTL/invalidation, hot API reads, stale/fresh behavior, query impact measurements | Performance engineering |
@@ -162,4 +171,4 @@ CI uses PHP 8.5 + PostgreSQL 17 on GitHub Actions. Compare branch and current fi
 
 ## 8. Instructions for future ChatGPT sessions in this Project
 
-Start by reading this roadmap and checking repo's latest `main` and feature branch, recent PR/CI status, and relevant current files. Do not assume a downloadable patch has been applied or merged. Continue from the remaining delivery tasks in Section 4, then the worker-lifecycle lesson. Explain one meaningful architecture decision and its alternatives, implement incrementally with the user, test, and review. At the conclusion of each topic **update the root README** and refresh the statuses in this pipeline. Distinguish verified from planned work. Keep content accurate, practical and portfolio-oriented. Do not invent tool executions or successful deployments.
+Start by reading this roadmap and checking repo's latest `main` and feature branch, recent PR/CI status, and relevant current files. Do not assume a downloadable patch has been applied or merged. Continue from the remaining delivery tasks in Section 4, then the real-provider integration lesson. Explain one meaningful architecture decision and its alternatives, implement incrementally with the user, test, and review. At the conclusion of each topic **update the root README** and refresh the statuses in this pipeline. Distinguish verified from planned work. Keep content accurate, practical and portfolio-oriented. Do not invent tool executions or successful deployments.
