@@ -56,6 +56,8 @@ final class ApiFootballAdapter implements SportsDataProviderInterface
             'response.*.fixture.status.short' => ['required', 'string'],
             'response.*.league.id' => ['required', 'integer'],
             'response.*.league.name' => ['required', 'string'],
+            'response.*.league.country' => ['sometimes', 'nullable', 'string'],
+            'response.*.league.season' => ['sometimes', 'nullable', 'integer'],
             'response.*.teams.home.id' => ['required', 'integer'],
             'response.*.teams.home.name' => ['required', 'string'],
             'response.*.teams.away.id' => ['required', 'integer'],
@@ -81,9 +83,22 @@ final class ApiFootballAdapter implements SportsDataProviderInterface
 
             $matches[] = new MatchData(
                 externalId: (string) $fixture['fixture']['id'],
-                competition: new CompetitionData((string) $fixture['league']['id'], $fixture['league']['name']),
-                homeTeam: new TeamData((string) $fixture['teams']['home']['id'], $fixture['teams']['home']['name']),
-                awayTeam: new TeamData((string) $fixture['teams']['away']['id'], $fixture['teams']['away']['name']),
+                competition: new CompetitionData((string) $fixture['league']['id'], $fixture['league']['name'], [
+                    'country' => $fixture['league']['country'] ?? null,
+                    'season' => $fixture['league']['season'] ?? null,
+                ]),
+                homeTeam: new TeamData((string) $fixture['teams']['home']['id'], $fixture['teams']['home']['name'], [
+                    'competition_external_id' => (string) $fixture['league']['id'],
+                    'competition_name' => $fixture['league']['name'],
+                    'competition_country' => $fixture['league']['country'] ?? null,
+                    'season' => $fixture['league']['season'] ?? null,
+                ]),
+                awayTeam: new TeamData((string) $fixture['teams']['away']['id'], $fixture['teams']['away']['name'], [
+                    'competition_external_id' => (string) $fixture['league']['id'],
+                    'competition_name' => $fixture['league']['name'],
+                    'competition_country' => $fixture['league']['country'] ?? null,
+                    'season' => $fixture['league']['season'] ?? null,
+                ]),
                 startsAt: new DateTimeImmutable($fixture['fixture']['date']),
                 status: $status,
                 homeScore: $fixture['goals']['home'],

@@ -33,6 +33,7 @@ final readonly class ResolveTeamService
                 entityType: 'team',
                 externalId: $teamData->externalId,
                 externalName: $teamData->name,
+                context: $teamData->context,
             );
 
             throw TeamMappingNotFound::forExternalId(

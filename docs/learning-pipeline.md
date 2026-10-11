@@ -58,7 +58,7 @@ Guiding invariant: provider-specific IDs never live inside canonical team/compet
 | 11A | Laravel database queue | `SyncProviderMatchesJob`, DI binding, reporting and DB worker | Merged in PR #10; verified from `origin/main` |
 | 11B | Retry and failure lifecycle | Transient recovery and all 10 persistent-failure attempts, ending in `failed_jobs` | Merged in PR #11; PostgreSQL integration suite verified |
 | 11C | Overlap protection | Provider/date middleware, real PostgreSQL lock contention, independent keys and stale-lock expiry | Base implementation merged in PR #10; integration tests merged in PR #11 |
-| 11D | Scheduled dispatch | Enabled-provider selection, today in UTC, five-minute schedule, scheduler locks | Implemented on `feat/scheduled-match-sync`; delivery pending |
+| 11D | Scheduled dispatch | Enabled-provider selection, today in UTC, five-minute schedule, scheduler locks | Merged in PR #12; interval changed to 30 minutes in PR #14 |
 | 11E | Worker lifecycle and Compose supervision | `pcntl`, real timeout/replacement tests, shared-cache restart, optional managed worker/scheduler services | Implemented on `feat/scheduled-match-sync`; production deployment unverified |
 
 **GitHub state verified October 11, 2026:** `origin/main` at `c686f52` includes merged PR #11. This lesson uses `feat/scheduled-match-sync` based on that commit. Queue reliability is delivered. Scheduler changes are on the feature branch; no scheduler PR, CI or merge is claimed yet.
@@ -89,7 +89,7 @@ Guiding invariant: provider-specific IDs never live inside canonical team/compet
 - [x] Updated README commands, architecture and operational limitations.
 - [x] Scheduler suite: **6 tests passed, 28 assertions**. Full PostgreSQL suite: **32 tests passed, 211 assertions**. Pint passed across 63 PHP files.
 - [x] `schedule:list` showed the five-minute event. `schedule:test --name=sports:sync-matches` invoked the registered event and persisted one development queue job; a real one-shot database worker completed it, leaving zero queued/failed jobs and one canonical fixture match.
-- [ ] Open a PR for `feat/scheduled-match-sync`, verify CI, review and merge before marking the milestone delivered. The branch combines scheduled dispatch with worker lifecycle and Compose supervision.
+- [x] Scheduler and worker lifecycle delivered in PR #12. The branch combines scheduled dispatch with worker lifecycle and Compose supervision.
 
 ### Worker lifecycle lesson
 
@@ -102,7 +102,7 @@ Guiding invariant: provider-specific IDs never live inside canonical team/compet
 
 Timeout tests use a one-second timeout/two attempts rather than waiting for the application's 60-second timeout/10 attempts. They use actual wall-clock time and Linux process signals, not simulated time. `--once` does not exercise Laravel's daemon timeout alarms. The fixture is test-only. Production cron, release deployment and multi-host recovery remain unverified.
 
-### Next focused lesson: real-provider HTTP integration
+### Previous focused lesson: real-provider HTTP integration
 
 Choose a provider and review its authentication, date semantics, limits and terms. Start with sanitized response fixtures and adapter tests. Define HTTP timeouts shorter than the job timeout, bounded retry/rate-limit behavior, and how normalized data enters the existing synchronization service. Keep live credentials in secure configuration; do not embed them in code or tests.
 
@@ -111,9 +111,9 @@ Choose a provider and review its authentication, date semantics, limits and term
 | Phase | Topic | Build outcome / tests | Portfolio value |
 |---|---|---|---|
 | 10 | Fault isolation and ingestion results | Completed basic `MatchSyncReport` and expected-mapping skip behavior; extend reporting when needed | Production ingestion resilience |
-| 11 | Laravel queues and scheduling | **Active:** queue reliability merged in PR #11; review/deliver scheduler and worker lifecycle, then real-provider integration | Asynchronous processing |
-| 12 | Real provider integration | HTTP client, timeout/retry policies, rate limiting, fixture-based adapter tests, secret management | External API engineering |
-| 13 | Contextual entity resolution | Candidate ranking, aliases, competition/country context, confidence thresholds, review policy and audit history | Identity reconciliation |
+| 11 | Laravel queues and scheduling | Delivered in PRs #11/#12; interval updated to 30 minutes in PR #14 | Asynchronous processing |
+| 12 | Real provider integration | Delivered in PR #14; learner verified live local sync | External API engineering |
+| 13 | Contextual entity resolution | Active: context, audited review and candidate ranking implemented; aliases and richer canonical context planned | Identity reconciliation |
 | 14 | Redis and caching | Cache keys, TTL/invalidation, hot API reads, stale/fresh behavior, query impact measurements | Performance engineering |
 | 15 | Database performance | Index analysis with EXPLAIN ANALYZE, efficient filtering/pagination, N+1 checks, realistic load test | Scalability evidence |
 | 16 | API hardening | Stable contracts, documented errors, pagination guarantees, OpenAPI documentation, optional authentication/rate limits | Consumer-ready API |
@@ -182,3 +182,19 @@ Implemented: HTTP adapter and fixture-based tests; provider-specific selection; 
 The saved-response integration test proves persistence, repeated-sync idempotency and API visibility. Live credentials are absent in the cloud environment, so real requests and account reset/coverage behavior remain to be checked locally with the README commands. No live schedule has been activated here. The next delivery step is local live-data validation, then one combined PR; cross-provider contextual resolution is the next architecture lesson.
 
 Validation: full PostgreSQL suite passes with **63 tests and 332 assertions**; Pint and diff checks pass. Secure cloud secret requirement is saved for `API_FOOTBALL_KEY` with destination `v3.football.api-sports.io`; secure value entry, runtime activation and live verification remain pending.
+
+## Contextual resolution lesson progress (2026-10-11)
+
+PR #14 is merged on main. The learner reports successful local live synchronization returning teams, competitions and matches; this is user-reported validation, not a cloud live request.
+
+Branch `feat/entity-resolution-review` implements the first phase of module 13: provider context in DTOs and pending records, a bounded pending-list command, explicit approval into existing canonical entities, transactional mapping/status/audit persistence, idempotent repeat approvals and conflict rejection. The workflow leaves existing imported entities and mappings untouched.
+
+The concrete exercise is to inspect a pending team, verify its competition context and existing canonical identity, approve the mapping, then rerun sync and observe the formerly skipped match through the API. Candidate ranking and review labels are implemented below; curated aliases and richer canonical context are the next exercise. This branch has not been committed, pushed or opened as a PR.
+
+Validation: **72 PostgreSQL tests passed, 404 assertions**; Pint and diff checks passed. The development audit-table migration and bounded pending-list command also executed successfully.
+
+### Candidate suggestions exercise
+
+Implemented `sports:entity-candidates`: deterministic, read-only ranking with explained name and mapped-competition match-history evidence. Name-only candidates remain weak, tied scores are ambiguous even beyond the output limit, and same-provider target conflicts are excluded. Country/season are not guessed. Ranking reads local data in batches and retains at most 20 suggestions, but still scans eligible canonical records. Seven focused tests verify ranking and uncertainty behavior; the approval workflow remains explicit.
+
+Candidate exercise validation: full PostgreSQL suite **79 tests passed, 432 assertions**; Pint and diff checks passed. No live API requests or provider mapping changes were made by the candidate lesson.

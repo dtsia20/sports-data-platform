@@ -33,6 +33,7 @@ final readonly class ResolveCompetitionService
                 entityType: 'competition',
                 externalId: $competitionData->externalId,
                 externalName: $competitionData->name,
+                context: $competitionData->context,
             );
 
             throw CompetitionMappingNotFound::forExternalId(
