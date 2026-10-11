@@ -796,9 +796,83 @@ A shared-cache lock serializes request-budget reservations. The default ceiling 
 
 This counter tracks this application's attempts only. Postman calls, other deployments with separate cache prefixes, and the provider's actual reset window are outside that count. Keep one shared persistent database cache across app, worker and scheduler, do not clear it to bypass the budget, and verify your account's remaining quota/reset policy. Tests prove the local behavior; live requests require your private key and supported plan coverage.
 
+## Entity resolution lesson: explicit review
+
+Provider IDs identify records within a provider; canonical IDs identify records inside our platform. Two records called “United” are not enough evidence that they identify the same club. This lesson keeps missing mappings pending and records competition/country/season context from API-Football for a reviewer. A competition country is context, not proof of team nationality.
+
+Apply the new audit-table migration, then inspect pending records:
+
+```bash
+docker compose exec app php artisan migrate
+docker compose exec app php artisan sports:unresolved --provider=api-football --limit=20
+```
+
+Use the existing `teams` or `competitions` table (for example through Adminer) to inspect the proposed canonical record and its existing provider references. Verify identity from provider IDs and trusted contextual evidence. Approve a specific pending ID and the canonical ID for its entity type:
+
+```bash
+docker compose exec app php artisan sports:resolve-entity 12 34 --reviewer="your-name" --reason="Verified the club using competition context and provider identity."
+docker compose exec app php artisan sports:sync-api-football --date=2026-10-11
+```
+
+The IDs above are examples. The command does not create canonical records or fetch remote data. It creates the provider reference, marks the pending record resolved, and snapshots the reviewer label, reason, external name and context in `provider_entity_resolutions`, all within one transaction. Repeating the same target is idempotent and preserves the original decision. Missing targets, conflicting references and reassignment of an approved record are rejected. A canonical record can have references from multiple providers; the existing constraints permit one external ID per canonical entity within each provider.
+
+Review uses a row lock on the pending record and database uniqueness constraints; conflicting writes roll back. Audit rows prevent deletion of their pending record through a foreign-key restriction. CLI reviewer labels are operator-supplied metadata, not authenticated identities. This is an approval workflow, not an automatic matcher: canonical country/season metadata, authenticated review, corrections and merging existing duplicate canonical records remain later work. Candidate ranking is described below. Existing sample-imported mappings are not rewritten.
+
+Run the focused lesson tests:
+
+```bash
+docker compose exec app php artisan test --compact tests/Feature/ProviderEntityResolutionTest.php
+```
+
+### Candidate ranking exercise
+
+After listing pending entities, use a pending ID to inspect suggestions:
+
+```bash
+docker compose exec app php artisan sports:entity-candidates 12 --limit=10
+```
+
+This command reads local records only and makes no HTTP requests or mapping changes. It shows canonical IDs, scores, confidence labels and the evidence behind each suggestion. Verify a candidate and then use `sports:resolve-entity` to approve it explicitly.
+
+| Evidence | Points / behavior |
+|---|---|
+| Exact normalized name | 50 |
+| Shared name tokens | Up to 50 using shared/total distinct tokens; names below 25 are omitted |
+| Team appears in a match in the provider's mapped canonical competition | +40; historical observation, current season membership unverified |
+| Country or season | No points: canonical records do not store this metadata |
+| Canonical target already mapped by this provider | Excluded to respect reference uniqueness |
+
+Names are lowercased, transliterated to ASCII and normalized for punctuation/whitespace. Club suffixes are not stripped. Explicitly curated provider aliases can supply the same 50 name points; they are not guessed. Exact normalized names alone are weak suggestions. Scores of 65–89 are tentative and 90 is strong; these are deterministic review labels, not identity probabilities or approval thresholds. Equal scores are marked ambiguous, including ties outside the output limit. Tied results sort by canonical ID for stable presentation only.
+
+The service reads canonical records in batches and retains only the requested best results (maximum 20). Competition-history checks are SQL existence checks included in each batch, avoiding a query per candidate. Ranking still scans eligible canonical records; measure and optimize that scan before using it at larger scale. Name normalization and historical match context can both mislead, so explicit review remains required. Competition candidates currently rely on names alone and cannot receive a strong confidence label.
+
+The tests cover contextual ranking, accent/case/punctuation normalization, hidden ties, provider conflicts, weak partial matches, missing context and a command that performs no writes. Curated aliases are described below; richer canonical context remains the next exercise.
+
+### Curated provider aliases
+
+An alias is a reviewed alternative name, not a provider-reference mapping. For example, “Spurs” can be a candidate hint for a canonical Tottenham Hotspur record without assuming that every future provider record with that name identifies the same team.
+
+```bash
+docker compose exec app php artisan migrate
+docker compose exec app php artisan sports:add-entity-alias api-football team 34 "Spurs" --reviewer="your-name" --reason="Verified alternative name against the provider and club information."
+docker compose exec app php artisan sports:entity-candidates 12
+```
+
+Replace the example IDs with existing records. The command requires an existing provider, canonical target, reviewer label and reason. Team and competition aliases are separate, and aliases only affect suggestions for their declared provider. Exact alias matches use the shared name-normalization rules and contribute 50 name points; an alias and canonical name do not stack. Name or alias evidence alone remains weak, and identical aliases for different targets remain ambiguous.
+
+Repeated normalized aliases for the same provider and target preserve the original reviewer/reason. Foreign keys protect provider and target identity, and a PostgreSQL check requires exactly one team or competition target. The ranking service loads relevant active aliases in one query per batch instead of querying each candidate separately.
+
+If evidence is withdrawn, revoke the returned alias ID:
+
+```bash
+docker compose exec app php artisan sports:revoke-entity-alias 7 --reviewer="your-name" --reason="The alternative name was entered for the wrong club."
+```
+
+Revocation stops alias-based suggestions and retains the original and revocation evidence. Repeated revocation preserves the first decision; revoked aliases cannot be silently reactivated. It does not remove existing approved mappings or prevent a candidate from qualifying independently through its canonical name. Reviewer labels remain operator-supplied metadata. Aliases do not change canonical names, fetch external data or approve entities automatically.
+
 ## Next Milestone
 
-The background-processing milestone was merged in PR #12. API-Football adapter selection, manual sync, explicit mapping import, request budgets and opt-in 30-minute scheduling are implemented on the feature branch. Next, verify live data locally, then review one combined integration PR. Contextual cross-provider entity resolution and production deployment remain later lessons.
+The background-processing milestone was merged in PR #12. API-Football adapter selection, manual sync, explicit mapping import, request budgets and opt-in 30-minute scheduling are implemented on the feature branch. PR #14 is merged, and the learner reports successful live synchronization locally. The next exercise implements contextual pending records and audited manual mapping approval on `feat/entity-resolution-review`. The review, candidate-ranking and curated-alias milestone is implemented; richer canonical context follows; production deployment remains a later milestone.
 
 The detailed lesson roadmap and verified delivery status are in [the learning pipeline](docs/learning-pipeline.md). The lifecycle design is recorded in [ADR-003](docs/adr/003-background-processing-lifecycle.md).
 

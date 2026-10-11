@@ -42,6 +42,9 @@ final class ApiFootballAdapterTest extends TestCase
         $this->assertSame('1492408', $first->externalId);
         $this->assertSame('71', $first->competition->externalId);
         $this->assertSame('Serie A', $first->competition->name);
+        $this->assertSame(['country' => 'Brazil', 'season' => 2026], $first->competition->context);
+        $this->assertSame('Brazil', $first->homeTeam->context['competition_country']);
+        $this->assertSame('71', $first->awayTeam->context['competition_external_id']);
         $this->assertSame('126', $first->homeTeam->externalId);
         $this->assertSame('Sao Paulo', $first->homeTeam->name);
         $this->assertSame('136', $first->awayTeam->externalId);

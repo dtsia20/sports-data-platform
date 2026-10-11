@@ -1,3 +1,11 @@
-ADR-002
-Unknown provider entities must not be matched by name alone.
-Resolution should use competition/context/confidence and fall back to review.
+# ADR-002: Contextual entity resolution and explicit review
+
+Unknown provider entities must not be matched by name alone. Provider external IDs are scoped to a provider; canonical IDs are internal identities.
+
+The first resolution exercise records country/season context for competitions and competition ID/name/country/season context for teams. Competition country is not treated as team nationality. Unknown mappings remain pending and skipped during ingestion.
+
+A reviewer selects an existing canonical record explicitly. Approval creates a provider reference, resolves the pending record and saves an audit snapshot in a single PostgreSQL transaction. Pending rows are locked; existing reference uniqueness constraints prevent conflicting assignments. Repeating approval to the same target returns the original audit decision. Reassignment is rejected. Audit rows restrict deletion of their source pending record.
+
+Reviewer labels and reasons are required CLI metadata, not authenticated user identities. The workflow does not automatically infer identity, merge canonical records, overwrite mappings created by the sample importer or offer correction of completed decisions. Context is the latest observation on the pending entity and a fixed snapshot on the audit record. Historical ingestion observations are not separately stored.
+
+Candidate suggestions now rank exact normalized names (50 points), shared name tokens (up to 50) and team match history in the provider-mapped competition (+40). Candidates with fewer than 25 name points are excluded; already-mapped provider targets are excluded. Country and season are not scored because canonical records lack them. Scores label suggestions weak, tentative (65–89), strong (90), or ambiguous (tied), including hidden ties beyond the output limit. These labels are heuristics and do not trigger mapping approval. Batches include SQL match-existence checks; ranking scans the eligible canonical records and retains only the requested top results. Curated aliases are provider-scoped hints attached by foreign key to exactly one team or competition, with reviewer/reason metadata. Exact normalized alias matches provide 50 name points without stacking with canonical names. Duplicate aliases for different targets remain ambiguous. Revocation retains original and revocation evidence and excludes the alias from future suggestions; reactivation is rejected. Existing mappings are not affected. Alias normalization is shared with candidate ranking. Richer canonical context and an authenticated review interface remain planned. Human review is the foundation before automatic suggestions. Production concurrency with arbitrary external database writers is not verified; transaction and uniqueness behavior are tested against PostgreSQL.
