@@ -172,3 +172,9 @@ CI uses PHP 8.5 + PostgreSQL 17 on GitHub Actions. Compare branch and current fi
 ## 8. Instructions for future ChatGPT sessions in this Project
 
 Start by reading this roadmap and checking repo's latest `main` and feature branch, recent PR/CI status, and relevant current files. Do not assume a downloadable patch has been applied or merged. Continue from the remaining delivery tasks in Section 4, then the real-provider integration lesson. Explain one meaningful architecture decision and its alternatives, implement incrementally with the user, test, and review. At the conclusion of each topic **update the root README** and refresh the statuses in this pipeline. Distinguish verified from planned work. Keep content accurate, practical and portfolio-oriented. Do not invent tool executions or successful deployments.
+
+## API-Football lesson progress (2026-10-11)
+
+PR #12 is merged on `main`, and the API-Football example response is committed there. Branch `feat/api-football-adapter` starts from that main revision. The first integration exercise adds a standalone adapter, private environment-key configuration, DTO and status mapping, nullable scores, response validation, bounded transient retries and explicit HTTP/API-error propagation. Twenty fixture-based tests pass with no real requests.
+
+The global application binding remains the fake adapter. Provider-specific selection, manual live synchronization, queue handling of quota errors, and daily request budgeting remain the next exercise. A 429 is currently surfaced without immediate HTTP retry; this adapter must not be connected to the existing ten-attempt queue policy without designing that handling. Live credentials, real-provider persistence and scheduled synchronization have not been tested. The adapter lesson is ready for PR review and local testing; merge and live integration remain pending. The full PostgreSQL suite passes with 54 tests and 292 assertions, and Pint passes.

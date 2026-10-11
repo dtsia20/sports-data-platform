@@ -741,9 +741,23 @@ Review and deliver scheduled dispatch
     → Observability
 ```
 
+## API-Football lesson: HTTP boundary
+
+`ApiFootballAdapter` implements `SportsDataProviderInterface` and converts the `/fixtures` response into the existing domain DTOs. Provider IDs become strings, provider statuses become domain statuses, and nullable goals remain nullable. Invalid payloads and unknown statuses fail explicitly instead of silently losing fixtures.
+
+Set `API_FOOTBALL_KEY` in your private `.env` for eventual live use; the committed `.env.example` contains only an empty placeholder. The adapter uses a 3-second connection timeout and a 10-second request timeout. Connection failures and HTTP 5xx responses get one retry (two total attempts); HTTP 401 and 429 are surfaced without immediate retries. HTTP 200 responses containing API errors also fail. HTTP timeouts remain below the job's 60-second timeout.
+
+Run the lesson without an API key or quota usage:
+
+```bash
+docker compose exec app php artisan test --compact tests/Feature/Infrastructure/ApiFootballAdapterTest.php
+```
+
+The tests use `Http::fake()` and the saved 1,159-fixture response. The application still binds the fake provider; the API-Football adapter is deliberately standalone at this stage. Do not swap the global binding: it would use API-Football data for every provider and allow the five-minute scheduler to exceed the free allowance. The next exercise is provider-specific adapter selection and a manual-only sync path, with explicit handling of quota errors before queue integration.
+
 ## Next Milestone
 
-Review and deliver the background-processing milestone: scheduled dispatch, daemon timeout enforcement and managed worker restart. Then integrate a real sports-data provider with HTTP timeouts, bounded retries, rate limits, fixture-based adapter tests and secure credential configuration. Production deployment remains a separate milestone.
+The background-processing milestone was merged in PR #12. The first API-Football lesson implements and tests the HTTP adapter. Next, select adapters by provider and add controlled manual synchronization; keep live scheduled synchronization disabled until request budgets and queue rate-limit policy are implemented. Production deployment remains a separate milestone.
 
 The detailed lesson roadmap and verified delivery status are in [the learning pipeline](docs/learning-pipeline.md). The lifecycle design is recorded in [ADR-003](docs/adr/003-background-processing-lifecycle.md).
 
